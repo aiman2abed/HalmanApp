@@ -1,9 +1,10 @@
 import os
 import re
 import json
+import base64
 from typing import Any, List, Literal, Optional
 
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from google import genai
@@ -71,6 +72,15 @@ class ContentBlock(BaseModel):
 class ChatResponse(BaseModel):
     reply: str
     blocks: List[ContentBlock] = Field(default_factory=list)
+
+
+class TranscriptionResponse(BaseModel):
+    transcript: str
+
+
+class LiveSessionResponse(BaseModel):
+    status: Literal["scaffolded"]
+    message: str
 
 
 # ==========================================
@@ -314,6 +324,33 @@ def generate_chat_reply(request: ChatRequest) -> ChatResponse:
     return parse_model_response(reply_text)
 
 
+def transcribe_audio_bytes(audio_bytes: bytes, mime_type: str) -> str:
+    prompt = (
+        "حوّل هذا الصوت إلى نص عربي واضح. "
+        "أرجع النص المنطوق فقط بدون مقدمات أو شروحات."
+    )
+
+    response = client.models.generate_content(
+        model=CHAT_MODEL,
+        contents=[
+            {
+                "role": "user",
+                "parts": [
+                    {"text": prompt},
+                    {
+                        "inline_data": {
+                            "mime_type": mime_type,
+                            "data": base64.b64encode(audio_bytes).decode("utf-8"),
+                        }
+                    },
+                ],
+            }
+        ],
+    )
+
+    return clean_text(getattr(response, "text", "") or "")
+
+
 # ==========================================
 # 4. API ENDPOINTS
 # ==========================================
@@ -374,3 +411,37 @@ def chat_with_halman(request: ChatRequest):
     except Exception as e:
         print(f"AI Chat Error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"AI Chat failed: {str(e)}")
+
+
+@app.post("/api/transcribe-audio", response_model=TranscriptionResponse)
+async def transcribe_audio(file: UploadFile = File(...)):
+    require_gemini_client()
+
+    try:
+        audio_bytes = await file.read()
+        if not audio_bytes:
+            raise HTTPException(status_code=400, detail="Empty audio file.")
+
+        mime_type = (file.content_type or "audio/webm").strip()
+        if not mime_type.startswith("audio/"):
+            raise HTTPException(status_code=400, detail="Uploaded file must be audio.")
+
+        transcript = transcribe_audio_bytes(audio_bytes=audio_bytes, mime_type=mime_type)
+        if not transcript:
+            raise HTTPException(status_code=422, detail="No speech detected in audio.")
+
+        return TranscriptionResponse(transcript=transcript)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Audio Transcription Error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Audio transcription failed: {str(e)}")
+
+
+@app.post("/api/live/session", response_model=LiveSessionResponse)
+def create_live_session_scaffold():
+    # TODO: Replace with Gemini Live API session creation and WS credentials.
+    return LiveSessionResponse(
+        status="scaffolded",
+        message="Live mode backend scaffold is ready. Streaming integration is pending.",
+    )
