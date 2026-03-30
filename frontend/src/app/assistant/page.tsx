@@ -94,6 +94,15 @@ interface LiveSessionConnection {
   socket: WebSocket;
 }
 
+interface LiveWsEventPayload {
+  event?: string;
+  message?: string;
+  text?: string;
+  source?: 'user' | 'assistant';
+  audio_base64?: string;
+  mime_type?: string;
+}
+
 // ==========================================
 // UI HELPERS
 // ==========================================
@@ -320,6 +329,14 @@ export default function AssistantPage() {
   const liveStreamRef = useRef<MediaStream | null>(null);
   const liveVideoRef = useRef<HTMLVideoElement>(null);
   const liveConnectionRef = useRef<LiveSessionConnection | null>(null);
+  const liveAudioContextRef = useRef<AudioContext | null>(null);
+  const liveAudioNodeRef = useRef<ScriptProcessorNode | null>(null);
+  const liveAudioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const liveOutputContextRef = useRef<AudioContext | null>(null);
+  const liveOutputNextTimeRef = useRef(0);
+  const liveOutputPendingRef = useRef(0);
+  const liveIsClosingRef = useRef(false);
+  const liveModeStatusRef = useRef<LiveModeStatus>('idle');
 
   const analyzerRecorderRef = useRef<MediaRecorder | null>(null);
   const analyzerStreamRef = useRef<MediaStream | null>(null);
@@ -340,6 +357,10 @@ export default function AssistantPage() {
   }, [voiceInputStatus]);
 
   useEffect(() => {
+    liveModeStatusRef.current = liveModeStatus;
+  }, [liveModeStatus]);
+
+  useEffect(() => {
     if (!liveVideoRef.current) return;
     liveVideoRef.current.srcObject = liveStreamRef.current;
   }, [liveModeStatus]);
@@ -349,6 +370,10 @@ export default function AssistantPage() {
       audioStreamRef.current?.getTracks().forEach((track) => track.stop());
       liveConnectionRef.current?.socket.close();
       liveConnectionRef.current = null;
+      liveAudioNodeRef.current?.disconnect();
+      liveAudioSourceRef.current?.disconnect();
+      liveAudioContextRef.current?.close();
+      liveOutputContextRef.current?.close();
       liveStreamRef.current?.getTracks().forEach((track) => track.stop());
       analyzerRecorderRef.current?.stop();
       analyzerStreamRef.current?.getTracks().forEach((track) => track.stop());
@@ -635,6 +660,138 @@ export default function AssistantPage() {
     }
   };
 
+  const floatToPcm16 = (input: Float32Array) => {
+    const buffer = new ArrayBuffer(input.length * 2);
+    const view = new DataView(buffer);
+    for (let i = 0; i < input.length; i += 1) {
+      const sample = Math.max(-1, Math.min(1, input[i]));
+      view.setInt16(i * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+    }
+    return new Uint8Array(buffer);
+  };
+
+  const bytesToBase64 = (bytes: Uint8Array) => {
+    let binary = '';
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      const sub = bytes.subarray(i, i + chunk);
+      binary += String.fromCharCode(...sub);
+    }
+    return btoa(binary);
+  };
+
+  const base64ToBytes = (value: string) => {
+    const binary = atob(value);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+  };
+
+  const decodePcm16ToFloat32 = (bytes: Uint8Array) => {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const count = Math.floor(bytes.byteLength / 2);
+    const output = new Float32Array(count);
+    for (let i = 0; i < count; i += 1) {
+      output[i] = view.getInt16(i * 2, true) / 0x8000;
+    }
+    return output;
+  };
+
+  const stopLiveAudioPipeline = () => {
+    liveAudioNodeRef.current?.disconnect();
+    liveAudioSourceRef.current?.disconnect();
+    liveAudioNodeRef.current = null;
+    liveAudioSourceRef.current = null;
+
+    if (liveAudioContextRef.current) {
+      liveAudioContextRef.current.close().catch(() => {});
+      liveAudioContextRef.current = null;
+    }
+
+    if (liveOutputContextRef.current) {
+      liveOutputContextRef.current.close().catch(() => {});
+      liveOutputContextRef.current = null;
+    }
+    liveOutputNextTimeRef.current = 0;
+    liveOutputPendingRef.current = 0;
+  };
+
+  const queueAssistantAudioChunk = (audioBase64: string, mimeType?: string) => {
+    if (!audioBase64) return;
+    if (!mimeType?.includes('audio/pcm')) return;
+
+    if (!liveOutputContextRef.current) {
+      liveOutputContextRef.current = new AudioContext();
+    }
+    const audioContext = liveOutputContextRef.current;
+    if (!audioContext) return;
+
+    const pcmBytes = base64ToBytes(audioBase64);
+    const pcmFloats = decodePcm16ToFloat32(pcmBytes);
+    if (pcmFloats.length === 0) return;
+
+    const buffer = audioContext.createBuffer(1, pcmFloats.length, 24000);
+    buffer.copyToChannel(pcmFloats, 0);
+    const source = audioContext.createBufferSource();
+    source.buffer = buffer;
+    source.connect(audioContext.destination);
+
+    const currentTime = audioContext.currentTime;
+    const startAt = Math.max(liveOutputNextTimeRef.current, currentTime + 0.02);
+    liveOutputNextTimeRef.current = startAt + buffer.duration;
+    liveOutputPendingRef.current += 1;
+
+    source.onended = () => {
+      liveOutputPendingRef.current = Math.max(0, liveOutputPendingRef.current - 1);
+      if (
+        liveOutputPendingRef.current === 0 &&
+        liveModeStatusRef.current !== 'idle' &&
+        liveModeStatusRef.current !== 'disconnected' &&
+        liveModeStatusRef.current !== 'error' &&
+        !liveIsClosingRef.current
+      ) {
+        handleAssistantSpeakingStop();
+      }
+    };
+
+    source.start(startAt);
+  };
+
+  const startLiveMicStreaming = (stream: MediaStream, socket: WebSocket) => {
+    const audioTrackAvailable = stream.getAudioTracks().length > 0;
+    if (!audioTrackAvailable) {
+      handleLiveConnectionError('الميكروفون غير متاح. فعّل الميكروفون ثم أعد المحاولة.');
+      return;
+    }
+
+    const AudioCtx = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioCtx) {
+      handleLiveConnectionError('المتصفح الحالي لا يدعم بث الصوت المباشر.');
+      return;
+    }
+
+    const inputContext = new AudioCtx({ sampleRate: 16000 });
+    const source = inputContext.createMediaStreamSource(stream);
+    const processor = inputContext.createScriptProcessor(2048, 1, 1);
+
+    source.connect(processor);
+    processor.connect(inputContext.destination);
+
+    processor.onaudioprocess = (audioEvent) => {
+      if (socket.readyState !== WebSocket.OPEN) return;
+      const pcm16 = floatToPcm16(audioEvent.inputBuffer.getChannelData(0));
+      socket.send(JSON.stringify({
+        event: 'audio_input_chunk',
+        mime_type: 'audio/pcm;rate=16000',
+        audio_base64: bytesToBase64(pcm16),
+      }));
+    };
+
+    liveAudioContextRef.current = inputContext;
+    liveAudioSourceRef.current = source;
+    liveAudioNodeRef.current = processor;
+  };
+
   const handleLiveConnectionError = (message: string) => {
     setLiveModeError(message);
     setLiveModeStatus('error');
@@ -655,7 +812,12 @@ export default function AssistantPage() {
     setLiveModeError('');
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+      } catch {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      }
       stopLiveTracks();
       liveStreamRef.current = stream;
       setLiveMicActive(stream.getAudioTracks().some((track) => track.enabled));
@@ -700,22 +862,28 @@ export default function AssistantPage() {
 
       ws.onopen = () => {
         setLiveModeStatus('connected');
+        liveIsClosingRef.current = false;
+        startLiveMicStreaming(liveStreamRef.current as MediaStream, ws);
       };
 
       ws.onmessage = (event) => {
         try {
-          const payload = JSON.parse(event.data) as { event?: string };
+          const payload = JSON.parse(event.data) as LiveWsEventPayload;
           if (payload.event === 'assistant_speaking_start') {
             handleAssistantSpeakingStart();
           } else if (payload.event === 'assistant_speaking_stop') {
             handleAssistantSpeakingStop();
-          } else if (payload.event === 'pong' || payload.event === 'ack') {
-            if (liveModeStatus !== 'assistant_speaking') {
-              setLiveModeStatus('listening');
-            }
+          } else if (payload.event === 'audio_output_chunk' && payload.audio_base64) {
+            queueAssistantAudioChunk(payload.audio_base64, payload.mime_type);
+          } else if (payload.event === 'session_ready' || payload.event === 'pong') {
+            setLiveModeStatus('listening');
+          } else if (payload.event === 'live_error') {
+            handleLiveConnectionError(payload.message || 'حدث خطأ في الجلسة المباشرة.');
+          } else if (payload.event === 'session_closed') {
+            setLiveModeStatus('disconnected');
           }
         } catch {
-          // ignore malformed transport scaffold messages
+          // ignore malformed events
         }
       };
 
@@ -724,7 +892,8 @@ export default function AssistantPage() {
       };
 
       ws.onclose = () => {
-        if (liveModeStatus !== 'idle' && liveModeStatus !== 'error') {
+        stopLiveAudioPipeline();
+        if (liveModeStatusRef.current !== 'idle' && liveModeStatusRef.current !== 'error') {
           setLiveModeStatus('disconnected');
           setLiveModeError('تم فصل الجلسة المباشرة. اضغط إعادة الاتصال للمتابعة.');
         }
@@ -738,11 +907,13 @@ export default function AssistantPage() {
   };
 
   const stopLiveSession = () => {
+    liveIsClosingRef.current = true;
     if (liveConnectionRef.current?.socket.readyState === WebSocket.OPEN) {
       liveConnectionRef.current.socket.send(JSON.stringify({ event: 'disconnect' }));
     }
     liveConnectionRef.current?.socket.close();
     liveConnectionRef.current = null;
+    stopLiveAudioPipeline();
     stopLiveTracks();
     setLiveModeError('');
     setLiveModeStatus('idle');
@@ -877,13 +1048,13 @@ export default function AssistantPage() {
 
   const liveStatusLabel: Record<LiveModeStatus, string> = {
     idle: 'اضغط بدء مباشر لتفعيل الجلسة الحية.',
-    requesting_permissions: 'جاري طلب إذن الميكروفون والكاميرا...',
-    ready: 'تم تجهيز الكاميرا والميكروفون. يمكنك بدء الاتصال المباشر.',
+    requesting_permissions: 'جاري طلب إذن الأجهزة...',
+    ready: 'تم تجهيز الأجهزة. يمكنك بدء الاتصال المباشر.',
     connecting: 'جاري إنشاء اتصال مباشر آمن...',
-    connected: 'تم الاتصال. بانتظار أحداث الجلسة اللحظية.',
-    listening: 'حلمان الآن في وضع الاستماع.',
+    connected: 'تم الاتصال المباشر.',
+    listening: 'جاري الاستماع.',
     assistant_speaking: 'حلمان يتحدث الآن.',
-    disconnected: 'تم فصل الاتصال المباشر. تقدر تعيد الاتصال فوراً.',
+    disconnected: 'انقطع الاتصال المباشر.',
     error: liveModeError || 'حدث خطأ في الجلسة المباشرة.',
   };
 
@@ -1187,9 +1358,6 @@ export default function AssistantPage() {
                 </button>
               </div>
 
-              <div className="bg-amber-50 border border-amber-100 rounded-2xl p-3 text-xs text-amber-900 leading-6">
-                <strong>ملاحظة شفافة:</strong> تم تجهيز بنية النقل المباشر (Session + WebSocket) مع حالة آمنة. دمج Gemini Live الصوتي اللحظي الكامل محدد كنقطة تطوير تالية بدون أي تزييف.
-              </div>
             </div>
           )}
 
