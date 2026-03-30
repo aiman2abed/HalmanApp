@@ -1,12 +1,17 @@
-// src/contexts/AuthContext.tsx
-'use client';
+"use client";
 
-import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
-import { User } from '@supabase/supabase-js';
-import { supabase } from '../lib/supabase';
-import { useRouter } from 'next/navigation';
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useState,
+  type ReactNode,
+} from "react";
+import { type User } from "@supabase/supabase-js";
+import { usePathname, useRouter } from "next/navigation";
+import { supabase } from "@/lib/supabase";
 
-interface Profile {
+interface PublicUserProfile {
   id: string;
   display_name: string;
   total_xp: number;
@@ -15,9 +20,14 @@ interface Profile {
 
 interface AuthContextType {
   user: User | null;
-  profile: Profile | null;
+  profile: PublicUserProfile | null;
   loading: boolean;
-  signUp: (email: string, password: string, display_name: string) => Promise<void>;
+  hasCompletedOnboarding: boolean | null;
+  signUp: (
+    email: string,
+    password: string,
+    displayName: string,
+  ) => Promise<void>;
   signIn: (email: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
   refreshProfile: () => Promise<void>;
@@ -25,60 +35,143 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+/**
+ * Global authentication provider for HalmanApp.
+ * Manages Supabase session, public.users profile data, and onboarding route guards.
+ */
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
-  const [profile, setProfile] = useState<Profile | null>(null);
+  const [profile, setProfile] = useState<PublicUserProfile | null>(null);
   const [loading, setLoading] = useState(true);
+  const [hasCompletedOnboarding, setHasCompletedOnboarding] = useState<
+    boolean | null
+  >(null);
+
   const router = useRouter();
+  const pathname = usePathname();
 
   const fetchProfile = async (userId: string) => {
     const { data, error } = await supabase
-      .from('users') // Updated table name
-      .select('*')
-      .eq('id', userId)
+      .from("users")
+      .select("id, display_name, total_xp, current_level")
+      .eq("id", userId)
+      .single();
+
+    if (error) {
+      console.error("Failed to fetch public.users profile:", error);
+      setProfile(null);
+      return;
+    }
+
+    setProfile(data);
+  };
+
+  const checkOnboardingStatus = async (userId: string) => {
+    const { data, error } = await supabase
+      .from("riasec_profiles")
+      .select("user_id")
+      .eq("user_id", userId)
       .maybeSingle();
-    
-    if (data) setProfile(data);
+
+    if (error) {
+      console.error("Failed to fetch onboarding status:", error);
+      setHasCompletedOnboarding(null);
+      return;
+    }
+
+    setHasCompletedOnboarding(Boolean(data));
   };
 
   const refreshProfile = async () => {
-    if (user) await fetchProfile(user.id);
+    if (!user) return;
+    await fetchProfile(user.id);
   };
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setUser(session?.user ?? null);
-      if (session?.user) fetchProfile(session.user.id);
+    const initializeSession = async () => {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      const activeUser = session?.user ?? null;
+      setUser(activeUser);
+
+      if (activeUser) {
+        await Promise.all([
+          fetchProfile(activeUser.id),
+          checkOnboardingStatus(activeUser.id),
+        ]);
+      } else {
+        setProfile(null);
+        setHasCompletedOnboarding(null);
+      }
+
+      setLoading(false);
+    };
+
+    initializeSession();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      const activeUser = session?.user ?? null;
+      setUser(activeUser);
+
+      if (activeUser) {
+        await Promise.all([
+          fetchProfile(activeUser.id),
+          checkOnboardingStatus(activeUser.id),
+        ]);
+      } else {
+        setProfile(null);
+        setHasCompletedOnboarding(null);
+      }
+
       setLoading(false);
     });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null);
-      if (session?.user) {
-        fetchProfile(session.user.id);
-      } else {
-        setProfile(null);
-        router.push('/login');
-      }
-    });
-
     return () => subscription.unsubscribe();
-  }, [router]);
+  }, []);
 
-  const signUp = async (email: string, password: string, display_name: string) => {
-    const { data, error } = await supabase.auth.signUp({
+  useEffect(() => {
+    if (loading) return;
+
+    if (!user && pathname !== "/login") {
+      router.replace("/login");
+      return;
+    }
+
+    if (
+      user &&
+      hasCompletedOnboarding === false &&
+      pathname !== "/assessment"
+    ) {
+      // منطق واجهة المستخدم: أي مستخدم بدون نتيجة RIASEC يجب أن يبدأ من صفحة التقييم.
+      router.replace("/assessment");
+    }
+  }, [loading, user, hasCompletedOnboarding, pathname, router]);
+
+  const signUp = async (
+    email: string,
+    password: string,
+    displayName: string,
+  ) => {
+    const { error } = await supabase.auth.signUp({
       email,
       password,
       options: {
-        // This metadata is picked up by the SQL Trigger we created!
-        data: { display_name }
-      }
+        data: { display_name: displayName },
+      },
     });
+
     if (error) throw error;
   };
 
   const signIn = async (email: string, password: string) => {
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    const { error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
     if (error) throw error;
   };
 
@@ -86,10 +179,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await supabase.auth.signOut();
     setUser(null);
     setProfile(null);
+    setHasCompletedOnboarding(null);
   };
 
   return (
-    <AuthContext.Provider value={{ user, profile, loading, signUp, signIn, signOut, refreshProfile }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        profile,
+        loading,
+        hasCompletedOnboarding,
+        signUp,
+        signIn,
+        signOut,
+        refreshProfile,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );
@@ -97,6 +202,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
 export const useAuth = () => {
   const context = useContext(AuthContext);
-  if (!context) throw new Error('useAuth must be used within AuthProvider');
+
+  if (!context) {
+    throw new Error("useAuth must be used within AuthProvider");
+  }
+
   return context;
 };
