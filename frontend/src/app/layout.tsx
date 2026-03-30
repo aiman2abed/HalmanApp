@@ -15,8 +15,7 @@ export const metadata: Metadata = {
 };
 
 /**
- * Root shell for HalmanApp App Router.
- * Keeps one unified navigation component and allocates content spacing per breakpoint.
+ * Root app shell with single-navigation architecture.
  */
 export default function RootLayout({
   children,
@@ -24,14 +23,12 @@ export default function RootLayout({
   return (
     <html lang="ar" dir="rtl">
       <body
-        className={`${notoKufi.className} flex h-screen w-full overflow-hidden bg-slate-50 text-slate-900`}
+        className={`${notoKufi.className} h-screen overflow-hidden bg-slate-100 text-slate-900`}
       >
         <AuthProvider>
           <Navigation />
-          <main className="relative h-full flex-1 overflow-y-auto pb-24 transition-all duration-300 md:pr-24 md:pb-0">
-            <div className="relative mx-auto h-full w-full max-w-5xl">
-              {children}
-            </div>
+          <main className="relative h-full overflow-y-auto pb-24 md:pb-0 md:pr-24">
+            {children}
           </main>
         </AuthProvider>
       </body>
