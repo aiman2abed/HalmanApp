@@ -39,6 +39,10 @@ interface ChatApiResponse {
   blocks?: MessageBlock[];
 }
 
+interface SendPromptOptions {
+  appendUserMessage?: boolean;
+}
+
 // ==========================================
 // UI HELPERS
 // ==========================================
@@ -71,7 +75,15 @@ function ThinkingDots({ visible }: { visible: boolean }) {
   );
 }
 
-function MessageContent({ message }: { message: Message }) {
+function MessageContent({
+  message,
+  onCopyCode,
+  copiedCodeMap,
+}: {
+  message: Message;
+  onCopyCode: (key: string, text: string) => void;
+  copiedCodeMap: Record<string, boolean>;
+}) {
   const isUser = message.sender === 'user';
 
   if (isUser || !message.blocks || message.blocks.length === 0) {
@@ -121,6 +133,7 @@ function MessageContent({ message }: { message: Message }) {
         }
 
         if (block.type === 'code') {
+          const codeCopyKey = `${message.id}-code-${index}`;
           return (
             <div
               key={index}
@@ -131,6 +144,13 @@ function MessageContent({ message }: { message: Message }) {
                   <Code2 className="w-4 h-4" />
                   <span>{block.language || 'code'}</span>
                 </div>
+                <button
+                  type="button"
+                  onClick={() => onCopyCode(codeCopyKey, block.text)}
+                  className="text-[11px] md:text-xs font-bold text-slate-200 bg-slate-800 hover:bg-slate-700 px-2.5 py-1 rounded-md transition-colors"
+                >
+                  {copiedCodeMap[codeCopyKey] ? 'تم النسخ' : 'نسخ الكود'}
+                </button>
               </div>
               <pre className="overflow-x-auto p-4 text-sm text-slate-100 leading-6">
                 <code>{block.text}</code>
@@ -176,6 +196,9 @@ export default function AssistantPage() {
   const [isRecordingAudio, setIsRecordingAudio] = useState(false);
   const [isRecordingVideo, setIsRecordingVideo] = useState(false);
   const [showAnalysis, setShowAnalysis] = useState(false);
+  const [copiedStateMap, setCopiedStateMap] = useState<Record<string, boolean>>(
+    {}
+  );
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -183,38 +206,79 @@ export default function AssistantPage() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isThinking]);
 
-  const handleSend = async () => {
-    if (!inputValue.trim() || isThinking) return;
+  const normalizeBlocks = (blocks: MessageBlock[] | undefined, reply: string) => {
+    if (blocks && blocks.length > 0) return blocks;
+    return [{ type: 'paragraph' as const, text: reply }];
+  };
 
-    const userMessage = inputValue;
+  const buildPlainTextFromMessage = (message: Message): string => {
+    if (!message.blocks || message.blocks.length === 0) return message.text;
+
+    const sections = message.blocks.flatMap((block) => {
+      if (block.type === 'title' || block.type === 'paragraph') {
+        return block.text ? [block.text] : [];
+      }
+      if (block.type === 'list') {
+        const intro = block.text ? [block.text] : [];
+        const items = (block.items || []).map((item) => `- ${item}`);
+        return [...intro, ...items];
+      }
+      if (block.type === 'code') {
+        const lang = block.language || 'code';
+        return [`[${lang}]`, block.text || ''];
+      }
+      return [];
+    });
+
+    const composed = sections.join('\n').trim();
+    return composed || message.text;
+  };
+
+  const copyWithFeedback = async (key: string, text: string) => {
+    if (!text.trim()) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedStateMap((prev) => ({ ...prev, [key]: true }));
+      setTimeout(() => {
+        setCopiedStateMap((prev) => ({ ...prev, [key]: false }));
+      }, 1500);
+    } catch (error) {
+      console.error('Clipboard copy failed:', error);
+    }
+  };
+
+  const sendPrompt = async (prompt: string, options: SendPromptOptions = {}) => {
+    const trimmedPrompt = prompt.trim();
+    if (!trimmedPrompt || isThinking) return;
+
+    const appendUserMessage = options.appendUserMessage ?? true;
     const userMsgId = `user-${Date.now()}`;
+    const userMessage: Message = {
+      id: userMsgId,
+      sender: 'user',
+      text: trimmedPrompt,
+      timestamp: new Date(),
+    };
 
-    const historyForBackend = messages
-      .filter((m) => m.id !== 'init-1')
-      .map((m) => ({
-        role: m.sender === 'bot' ? 'model' : 'user',
-        text: m.text,
-      }));
+    if (appendUserMessage) {
+      setMessages((prev) => [...prev, userMessage]);
+    }
 
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: userMsgId,
-        sender: 'user',
-        text: userMessage,
-        timestamp: new Date(),
-      },
-    ]);
-
-    setInputValue('');
     setIsThinking(true);
 
     try {
+      const historyForBackend = messages
+        .filter((m) => m.id !== 'init-1')
+        .map((m) => ({
+          role: m.sender === 'bot' ? 'model' : 'user',
+          text: m.text,
+        }));
+
       const response = await fetch('http://localhost:8000/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          user_message: userMessage,
+          user_message: trimmedPrompt,
           student_name: profile?.display_name || 'يا صديقي',
           dominant_trait: 'مستكشف',
           history: historyForBackend,
@@ -232,7 +296,7 @@ export default function AssistantPage() {
           id: botMsgId,
           sender: 'bot',
           text: data.reply,
-          blocks: data.blocks || [{ type: 'paragraph', text: data.reply }],
+          blocks: normalizeBlocks(data.blocks, data.reply),
           timestamp: new Date(),
         },
       ]);
@@ -256,6 +320,27 @@ export default function AssistantPage() {
       ]);
     } finally {
       setIsThinking(false);
+    }
+  };
+
+  const handleSend = async () => {
+    const prompt = inputValue;
+    setInputValue('');
+    await sendPrompt(prompt, { appendUserMessage: true });
+  };
+
+  const handleRetry = async (assistantMessageId: string) => {
+    if (isThinking) return;
+
+    const currentIndex = messages.findIndex((m) => m.id === assistantMessageId);
+    if (currentIndex <= 0) return;
+
+    for (let i = currentIndex - 1; i >= 0; i -= 1) {
+      const candidate = messages[i];
+      if (candidate.sender === 'user' && candidate.text.trim()) {
+        await sendPrompt(candidate.text, { appendUserMessage: true });
+        return;
+      }
     }
   };
 
@@ -366,7 +451,37 @@ export default function AssistantPage() {
                         : 'bg-white border border-slate-100 text-slate-700 rounded-tr-md px-4 py-3.5'
                     }`}
                   >
-                    <MessageContent message={message} />
+                    <MessageContent
+                      message={message}
+                      onCopyCode={copyWithFeedback}
+                      copiedCodeMap={copiedStateMap}
+                    />
+                    {message.sender === 'bot' && (
+                      <div className="mt-3 pt-2 border-t border-slate-100 flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            copyWithFeedback(
+                              `${message.id}-all`,
+                              buildPlainTextFromMessage(message)
+                            )
+                          }
+                          className="text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-1.5 rounded-lg transition-colors"
+                        >
+                          {copiedStateMap[`${message.id}-all`]
+                            ? 'تم النسخ'
+                            : 'نسخ الكل'}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isThinking}
+                          onClick={() => handleRetry(message.id)}
+                          className="text-xs font-bold bg-orange-50 hover:bg-orange-100 text-orange-700 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          إعادة المحاولة
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </motion.div>
               ))}
