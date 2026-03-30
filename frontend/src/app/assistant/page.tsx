@@ -1,18 +1,47 @@
-// src/app/assistant/page.tsx
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { Send, User, Video, Mic, CheckCircle, Sparkles ,BotMessageSquare} from 'lucide-react';
+import {
+  Send,
+  User,
+  Video,
+  Mic,
+  CheckCircle,
+  Sparkles,
+  BotMessageSquare,
+  StopCircle,
+  Smile,
+  Code2,
+} from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import Image from 'next/image';
+import { useAuth } from '@/contexts/AuthContext';
+
+// ==========================================
+// TYPES
+// ==========================================
+type MessageBlock =
+  | { type: 'title'; text: string }
+  | { type: 'paragraph'; text: string }
+  | { type: 'code'; text: string; language?: string }
+  | { type: 'list'; items: string[]; text?: string };
 
 interface Message {
-  id: number;
+  id: string;
   sender: 'user' | 'bot';
   text: string;
+  blocks?: MessageBlock[];
   timestamp: Date;
 }
 
-// Reusable animated thinking indicator
+interface ChatApiResponse {
+  reply: string;
+  blocks?: MessageBlock[];
+}
+
+// ==========================================
+// UI HELPERS
+// ==========================================
 function ThinkingDots({ visible }: { visible: boolean }) {
   if (!visible) return null;
 
@@ -23,7 +52,7 @@ function ThinkingDots({ visible }: { visible: boolean }) {
       exit={{ opacity: 0, y: -10 }}
       className="flex gap-3 justify-start"
     >
-      <div className="w-10 h-10 bg-gradient-to-br from-orange-400 to-pink-500 rounded-full flex items-center justify-center flex-shrink-0 shadow-md border-2 border-white">
+      <div className="w-10 h-10 bg-gradient-to-br from-orange-400 to-pink-500 rounded-full flex items-center justify-center flex-shrink-0 shadow-md border-2 border-white overflow-hidden">
         <Sparkles className="w-5 h-5 text-white" />
       </div>
       <div className="bg-white border border-slate-100 shadow-sm px-4 py-3 rounded-2xl rounded-tr-sm">
@@ -42,141 +71,343 @@ function ThinkingDots({ visible }: { visible: boolean }) {
   );
 }
 
+function MessageContent({ message }: { message: Message }) {
+  const isUser = message.sender === 'user';
+
+  if (isUser || !message.blocks || message.blocks.length === 0) {
+    return <p className="whitespace-pre-wrap break-words">{message.text}</p>;
+  }
+
+  return (
+    <div className="space-y-3">
+      {message.blocks.map((block, index) => {
+        if (block.type === 'title') {
+          return (
+            <h3
+              key={index}
+              className="text-base md:text-lg font-extrabold text-slate-800"
+            >
+              {block.text}
+            </h3>
+          );
+        }
+
+        if (block.type === 'paragraph') {
+          return (
+            <p
+              key={index}
+              className="text-sm md:text-[15px] leading-7 text-slate-700 whitespace-pre-wrap"
+            >
+              {block.text}
+            </p>
+          );
+        }
+
+        if (block.type === 'list') {
+          return (
+            <div key={index} className="space-y-2">
+              {block.text ? (
+                <p className="text-sm leading-7 text-slate-700">{block.text}</p>
+              ) : null}
+              <ul className="list-disc pr-5 space-y-1 text-sm text-slate-700">
+                {block.items.map((item, itemIndex) => (
+                  <li key={itemIndex} className="leading-7">
+                    {item}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          );
+        }
+
+        if (block.type === 'code') {
+          return (
+            <div
+              key={index}
+              className="rounded-2xl overflow-hidden border border-slate-200 bg-slate-950 shadow-sm"
+            >
+              <div className="flex items-center justify-between px-4 py-2 bg-slate-900 border-b border-slate-800">
+                <div className="flex items-center gap-2 text-slate-300 text-xs font-semibold">
+                  <Code2 className="w-4 h-4" />
+                  <span>{block.language || 'code'}</span>
+                </div>
+              </div>
+              <pre className="overflow-x-auto p-4 text-sm text-slate-100 leading-6">
+                <code>{block.text}</code>
+              </pre>
+            </div>
+          );
+        }
+
+        return null;
+      })}
+    </div>
+  );
+}
+
+// ==========================================
+// MAIN PAGE
+// ==========================================
 export default function AssistantPage() {
-  // Chat States
+  const { profile } = useAuth();
+
   const [messages, setMessages] = useState<Message[]>([
     {
-      id: 1,
+      id: 'init-1',
       sender: 'bot',
-      text: "مرحباً يا بطل! أنا حلمان أفندي 🌟 أنا هنا لأساعدك في اكتشاف مهاراتك وبناء مستقبلك المشرق. كيف يمكنني مساعدتك اليوم؟ 🚀",
+      text: 'مرحباً! أنا حلمان أفندي. أنا هنا لأساعدك بطريقة بسيطة ومريحة. احكيلي شو حابب نبدأ فيه.',
+      blocks: [
+        { type: 'title', text: 'مرحباً 👋' },
+        {
+          type: 'paragraph',
+          text: 'أنا حلمان أفندي، موجود حتى أساعدك بطريقة بسيطة ومريحة.',
+        },
+        {
+          type: 'paragraph',
+          text: 'احكيلي شو حابب نبدأ فيه: سؤال، فكرة، شرح، أو حتى كود.',
+        },
+      ],
       timestamp: new Date(),
     },
   ]);
+
   const [inputValue, setInputValue] = useState('');
   const [isThinking, setIsThinking] = useState(false);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-
-  // Video Coaching States
-  const [isRecording, setIsRecording] = useState(false);
+  const [isRecordingAudio, setIsRecordingAudio] = useState(false);
+  const [isRecordingVideo, setIsRecordingVideo] = useState(false);
   const [showAnalysis, setShowAnalysis] = useState(false);
 
-  // Auto-scroll chat to bottom
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isThinking]);
 
-  // Simulated Frontend AI Logic (To be connected to FastAPI later)
-  const simulateAIResponse = (userMessage: string): string => {
-    const lowerMessage = userMessage.toLowerCase();
-    
-    if (lowerMessage.includes('برمجة') || lowerMessage.includes('حاسوب') || lowerMessage.includes('روبوت')) {
-      return "اختيار رائع! 🤖 البرمجة هي لغة المستقبل. يمكنك البدء بمهام مختبر الحاسوب في قسم المهمات. هل تحب أن أعطيك أول تحدي برمجي؟ 💻";
-    }
-    if (lowerMessage.includes('صعب') || lowerMessage.includes('لا أعرف') || lowerMessage.includes('حزين')) {
-      return "لا تقلق أبداً! 💙 كل الأبطال يواجهون تحديات في البداية. الفشل هو خطوتك الأولى نحو النجاح. تذكر أنني هنا دائماً لمساعدتك. جرب أخذ نفس عميق ولنحاول مرة أخرى! 🌈";
-    }
-    if (lowerMessage.includes('أحلم') || lowerMessage.includes('مستقبل') || lowerMessage.includes('أريد')) {
-      return "يا له من حلم مذهل! ✨ الأحلام الكبيرة تتحقق بخطوات صغيرة. بناءً على ملفك المهاري، أنت في الطريق الصحيح. استمر في إنجاز مهامك! 🎯";
-    }
-    
-    return "هذا مثير للاهتمام جداً! 🤔 أخبرني المزيد... كيف تعتقد أن هذا سيساعدك في تطوير مهاراتك؟ أنا أستمع إليك! 💭";
-  };
-
-  const handleSend = () => {
+  const handleSend = async () => {
     if (!inputValue.trim() || isThinking) return;
 
     const userMessage = inputValue;
-    setMessages(prev => [...prev, { id: prev.length + 1, sender: 'user', text: userMessage, timestamp: new Date() }]);
+    const userMsgId = `user-${Date.now()}`;
+
+    const historyForBackend = messages
+      .filter((m) => m.id !== 'init-1')
+      .map((m) => ({
+        role: m.sender === 'bot' ? 'model' : 'user',
+        text: m.text,
+      }));
+
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: userMsgId,
+        sender: 'user',
+        text: userMessage,
+        timestamp: new Date(),
+      },
+    ]);
+
     setInputValue('');
     setIsThinking(true);
 
-    // Fake network delay
-    setTimeout(() => {
-      setMessages(prev => [...prev, { id: prev.length + 2, sender: 'bot', text: simulateAIResponse(userMessage), timestamp: new Date() }]);
+    try {
+      const response = await fetch('http://localhost:8000/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_message: userMessage,
+          student_name: profile?.display_name || 'يا صديقي',
+          dominant_trait: 'مستكشف',
+          history: historyForBackend,
+        }),
+      });
+
+      if (!response.ok) throw new Error('Failed to reach backend');
+
+      const data: ChatApiResponse = await response.json();
+      const botMsgId = `bot-${Date.now()}`;
+
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: botMsgId,
+          sender: 'bot',
+          text: data.reply,
+          blocks: data.blocks || [{ type: 'paragraph', text: data.reply }],
+          timestamp: new Date(),
+        },
+      ]);
+    } catch (error) {
+      console.error('Chat Error:', error);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `error-${Date.now()}`,
+          sender: 'bot',
+          text: 'عذراً، صار عندي خلل صغير بالاتصال. جرّب مرة ثانية.',
+          blocks: [
+            { type: 'title', text: 'مشكلة اتصال بسيطة' },
+            {
+              type: 'paragraph',
+              text: 'عذراً، صار عندي خلل صغير بالاتصال. جرّب مرة ثانية.',
+            },
+          ],
+          timestamp: new Date(),
+        },
+      ]);
+    } finally {
       setIsThinking(false);
-    }, 1500);
+    }
   };
 
-  const handleRecording = () => {
-    setIsRecording(true);
-    // Fake 3 second video recording
+  const handleAudioRecordToggle = () => {
+    if (isRecordingAudio) {
+      setIsRecordingAudio(false);
+      setInputValue('أنا أحب تعلم أشياء جديدة!');
+      setTimeout(() => handleSend(), 500);
+    } else {
+      setIsRecordingAudio(true);
+    }
+  };
+
+  const handleVideoRecording = () => {
+    setIsRecordingVideo(true);
     setTimeout(() => {
-      setIsRecording(false);
+      setIsRecordingVideo(false);
       setShowAnalysis(true);
     }, 3000);
   };
 
   return (
-    <div className="p-2 md:p-6 max-w-5xl mx-auto h-full flex flex-col gap-4">
-      
-      {/* Header */}
-      <div className="mb-2 px-2">
-        <h1 className="text-2xl md:text-3xl font-black bg-gradient-to-r from-orange-500 to-pink-600 bg-clip-text text-transparent flex items-center gap-3">
+    <div className="p-3 md:p-6 max-w-7xl mx-auto h-full flex flex-col gap-5">
+      {/* HEADER */}
+      <div className="px-1 md:px-2">
+        <div className="inline-flex items-center gap-3 bg-white/80 backdrop-blur rounded-2xl px-4 py-3 border border-orange-100 shadow-sm">
           <div className="bg-orange-100 p-2 rounded-xl border border-orange-200 shadow-sm">
-            <Sparkles className="w-6 h-6 text-orange-500" />
+            <Smile className="w-6 h-6 text-orange-500" />
           </div>
-          حلمان أفندي
-        </h1>
-        <p className="text-slate-500 text-sm font-medium mt-1">مدربك الشخصي ومرشدك الذكي 🌟</p>
+          <div>
+            <h1 className="text-2xl md:text-3xl font-black bg-gradient-to-r from-orange-500 to-pink-600 bg-clip-text text-transparent">
+              مساحة المساعدة
+            </h1>
+            <p className="text-slate-500 text-sm font-medium mt-1">
+              تحدث، اسأل، وتعلّم مع حلمان أفندي بطريقة مرتبة وواضحة
+            </p>
+          </div>
+        </div>
       </div>
 
-      {/* Main Grid: Stacked on Mobile, Side-by-Side on Desktop */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 flex-1 min-h-0 pb-6">
-        
-        {/* Left Column: Text Chat UI */}
-        <div className="bg-white rounded-3xl shadow-lg border border-slate-100 flex flex-col h-[500px] md:h-full overflow-hidden">
-          
-          <div className="bg-slate-50 border-b border-slate-100 p-4">
-            <h2 className="font-bold text-slate-700 flex items-center gap-2 text-sm">
-              <BotMessageSquare className="w-4 h-4 text-orange-500" />
-              محادثة نصية
-            </h2>
+      {/* GRID */}
+      <div className="grid grid-cols-1 xl:grid-cols-[1.2fr_0.8fr] gap-5 flex-1 min-h-0 pb-6">
+        {/* LEFT: CHAT */}
+        <div className="bg-white rounded-[28px] shadow-lg border border-slate-100 flex flex-col min-h-[620px] overflow-hidden">
+          {/* CHAT HEADER */}
+          <div className="bg-gradient-to-r from-orange-50 to-pink-50 border-b border-orange-100 p-4 md:p-5 flex items-center gap-4 shadow-sm z-10">
+            <div className="relative w-14 h-14 rounded-full border-2 border-white shadow-md overflow-hidden bg-orange-200 flex-shrink-0">
+              <div className="absolute inset-0 flex items-center justify-center text-orange-500 font-black text-xs">
+                حلمان
+              </div>
+              <Image
+                src="/assets/halman-avatar.png"
+                alt="حلمان أفندي"
+                fill
+                sizes="56px"
+                className="z-10 object-cover"
+                onError={(e) => {
+                  e.currentTarget.style.display = 'none';
+                }}
+              />
+            </div>
+
+            <div className="min-w-0">
+              <h2 className="font-black text-slate-800 text-lg">حلمان أفندي</h2>
+              <p className="text-sm text-slate-600 font-medium">
+                مساعد ذكي يشرح، يرتّب الأفكار، ويدعمك خطوة بخطوة
+              </p>
+              <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-500 mt-1">
+                <span className="relative flex h-2.5 w-2.5">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+                </span>
+                متصل الآن
+              </div>
+            </div>
           </div>
 
-          <div className="flex-1 p-4 overflow-y-auto space-y-4 bg-slate-50/50">
+          {/* MESSAGES */}
+          <div className="flex-1 p-4 md:p-5 overflow-y-auto space-y-4 bg-slate-50/70">
             <AnimatePresence>
               {messages.map((message) => (
                 <motion.div
                   key={message.id}
                   initial={{ opacity: 0, y: 10 }}
                   animate={{ opacity: 1, y: 0 }}
-                  className={`flex gap-2 ${message.sender === 'user' ? 'justify-end' : 'justify-start'}`}
+                  className={`flex gap-3 ${message.sender === 'user' ? 'justify-end' : 'justify-start'}`}
                 >
                   {message.sender === 'bot' && (
-                    <div className="w-8 h-8 bg-gradient-to-br from-orange-400 to-pink-500 rounded-full flex items-center justify-center flex-shrink-0 shadow-sm border border-white">
-                      <Sparkles className="w-4 h-4 text-white" />
+                    <div className="w-9 h-9 bg-orange-200 rounded-full flex items-center justify-center flex-shrink-0 shadow-sm border border-white overflow-hidden relative mt-1">
+                      <Image
+                        src="/assets/halman-avatar.png"
+                        alt="Bot"
+                        fill
+                        sizes="36px"
+                        className="object-cover"
+                        onError={(e) => {
+                          e.currentTarget.style.display = 'none';
+                        }}
+                      />
+                      <Smile className="w-4 h-4 text-orange-500 z-0" />
                     </div>
                   )}
-                  
-                  <div className={`max-w-[80%] px-4 py-2.5 rounded-2xl shadow-sm text-sm font-medium leading-relaxed ${
-                    message.sender === 'user'
-                      ? 'bg-sky-500 text-white rounded-tl-sm'
-                      : 'bg-white border border-slate-100 text-slate-700 rounded-tr-sm'
-                  }`}>
-                    {message.text}
+
+                  <div
+                    className={`max-w-[88%] rounded-3xl shadow-sm ${
+                      message.sender === 'user'
+                        ? 'bg-sky-500 text-white rounded-tl-md px-4 py-3'
+                        : 'bg-white border border-slate-100 text-slate-700 rounded-tr-md px-4 py-3.5'
+                    }`}
+                  >
+                    <MessageContent message={message} />
                   </div>
                 </motion.div>
               ))}
             </AnimatePresence>
+
             <ThinkingDots visible={isThinking} />
             <div ref={messagesEndRef} />
           </div>
 
-          <div className="p-3 bg-white border-t border-slate-100">
-            <div className="flex gap-2">
+          {/* INPUT */}
+          <div className="p-3 md:p-4 bg-white border-t border-slate-100">
+            <div className="flex gap-2 items-center">
+              <button
+                onClick={handleAudioRecordToggle}
+                className={`w-12 h-12 rounded-xl flex items-center justify-center transition-all shadow-md flex-shrink-0 ${
+                  isRecordingAudio
+                    ? 'bg-rose-500 text-white animate-pulse shadow-rose-200'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-800'
+                }`}
+              >
+                {isRecordingAudio ? (
+                  <StopCircle className="w-5 h-5" />
+                ) : (
+                  <Mic className="w-5 h-5" />
+                )}
+              </button>
+
               <input
                 type="text"
-                value={inputValue}
+                value={isRecordingAudio ? 'جاري الاستماع إليك...' : inputValue}
                 onChange={(e) => setInputValue(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-                placeholder="اسأل حلمان أفندي..."
-                disabled={isThinking}
+                placeholder="اكتب رسالة، سؤال، أو حتى كود..."
+                disabled={isThinking || isRecordingAudio}
                 className="flex-1 bg-slate-50 px-4 py-3 rounded-xl border border-slate-200 focus:border-orange-400 focus:ring-2 focus:ring-orange-100 outline-none transition-all text-sm disabled:opacity-50"
               />
+
               <button
                 onClick={handleSend}
-                disabled={isThinking || !inputValue.trim()}
-                className="bg-orange-500 text-white w-12 h-12 rounded-xl flex items-center justify-center hover:bg-orange-600 active:scale-95 transition-all disabled:opacity-50 disabled:active:scale-100 shadow-md shadow-orange-200"
+                disabled={isThinking || (!inputValue.trim() && !isRecordingAudio)}
+                className="bg-orange-500 text-white w-12 h-12 rounded-xl flex items-center justify-center hover:bg-orange-600 active:scale-95 transition-all disabled:opacity-50 disabled:active:scale-100 shadow-md shadow-orange-200 flex-shrink-0"
               >
                 <Send className="w-5 h-5 -ml-1" />
               </button>
@@ -184,97 +415,123 @@ export default function AssistantPage() {
           </div>
         </div>
 
-        {/* Right Column: Multimodal Video Coaching */}
-        <div className="bg-white rounded-3xl shadow-lg border border-slate-100 p-4 md:p-6 flex flex-col h-[500px] md:h-full">
-          <div className="mb-4">
+        {/* RIGHT: VIDEO PANEL */}
+        <div className="bg-white rounded-[28px] shadow-lg border border-slate-100 p-4 md:p-6 flex flex-col min-h-[620px]">
+          <div className="mb-5">
             <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2 mb-1">
               <Video className="w-5 h-5 text-sky-500" />
               التدريب التفاعلي
             </h2>
-            <p className="text-xs text-slate-500 font-medium">تدرب على الإلقاء وتعرف على لغة جسدك</p>
+            <p className="text-sm text-slate-500 font-medium leading-6">
+              مساحة تجريبية للصوت والفيديو. الواجهة جاهزة، والتحليل التفصيلي يمكن تطويره لاحقاً بدون كسر الشكل الحالي.
+            </p>
           </div>
 
           {!showAnalysis ? (
             <div className="flex-1 flex flex-col gap-4">
-              {/* Fake Camera Feed */}
-              <div className="bg-slate-900 rounded-2xl flex-1 flex items-center justify-center relative overflow-hidden border-4 border-slate-800">
-                {isRecording ? (
+              <div className="bg-slate-900 rounded-3xl flex-1 flex items-center justify-center relative overflow-hidden border-4 border-slate-800">
+                {isRecordingVideo ? (
                   <div className="text-center animate-pulse">
-                    <div className="w-12 h-12 bg-red-500 rounded-full mx-auto mb-3 shadow-[0_0_20px_rgba(239,68,68,0.6)] border-2 border-white/50" />
-                    <p className="text-white text-sm font-bold tracking-wider">جاري التحليل...</p>
+                    <div className="w-12 h-12 bg-red-500 rounded-full mx-auto mb-3 shadow-[0_0_20px_rgba(239,68,68,0.6)] flex items-center justify-center border-2 border-white/50">
+                      <Mic className="w-5 h-5 text-white animate-bounce" />
+                    </div>
+                    <p className="text-white text-sm font-bold tracking-wider">
+                      جاري الاستماع والتحليل...
+                    </p>
                   </div>
                 ) : (
                   <div className="text-center text-slate-500">
                     <User className="w-12 h-12 mx-auto mb-2 opacity-50" />
-                    <p className="text-xs font-medium">معاينة الكاميرا</p>
+                    <p className="text-xs font-medium">منطقة الكاميرا التجريبية</p>
                   </div>
                 )}
               </div>
 
-              {/* Coaching Prompt */}
-              <div className="bg-sky-50 border border-sky-100 rounded-xl p-4">
+              <div className="bg-sky-50 border border-sky-100 rounded-2xl p-4">
                 <p className="text-xs font-bold text-sky-700 mb-1">تحدي اليوم:</p>
-                <p className="text-sm font-medium text-slate-700 leading-relaxed">
-                  تحدث لمدة 15 ثانية عن مشروع علمي أو تقني تحلم بتصميمه في المستقبل!
+                <p className="text-sm font-medium text-slate-700 leading-7">
+                  تحدث لمدة 15 ثانية عن شيء يسعدك. الهدف هنا أن تتكلم براحتك، لا أن تكون مثالياً.
                 </p>
               </div>
 
               <button
-                onClick={handleRecording}
-                disabled={isRecording}
-                className="w-full bg-gradient-to-r from-rose-400 to-red-500 text-white font-bold py-4 rounded-xl shadow-md shadow-red-200 active:scale-95 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                onClick={handleVideoRecording}
+                disabled={isRecordingVideo}
+                className="w-full bg-gradient-to-r from-sky-400 to-blue-500 text-white font-bold py-4 rounded-xl shadow-md shadow-blue-200 active:scale-95 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
               >
-                <Mic className="w-5 h-5" />
-                {isRecording ? 'استمع لك...' : 'ابدأ التحدي'}
+                <Video className="w-5 h-5" />
+                {isRecordingVideo ? 'حلمان يتابعك الآن...' : 'ابدأ التحدي المرئي'}
               </button>
             </div>
           ) : (
-            // Fake Analysis Result Screen
             <div className="flex-1 flex flex-col justify-center space-y-4 animate-in fade-in zoom-in duration-300">
               <div className="text-center mb-2">
                 <CheckCircle className="w-12 h-12 text-emerald-500 mx-auto mb-2" />
-                <h3 className="text-xl font-bold text-slate-800">أداء رائع!</h3>
+                <h3 className="text-xl font-bold text-slate-800">أداء جميل جداً</h3>
+                <p className="text-sm text-slate-500 mt-1">
+                  هذه نتائج تجريبية للواجهة ويمكن لاحقاً ربطها بتحليل حقيقي.
+                </p>
               </div>
 
               <div className="space-y-3">
-                {/* Metric 1 */}
-                <div className="bg-slate-50 border border-slate-100 rounded-xl p-3">
+                <div className="bg-slate-50 border border-slate-100 rounded-2xl p-3">
                   <div className="flex justify-between items-center mb-2">
-                    <span className="text-xs font-bold text-slate-700">لغة الجسد والثقة</span>
-                    <span className="text-emerald-600 font-black text-xs">85%</span>
+                    <span className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+                      <User className="w-3 h-3" />
+                      لغة الجسد والثقة
+                    </span>
+                    <span className="text-emerald-600 font-black text-xs">مذهل</span>
                   </div>
                   <div className="w-full bg-slate-200 rounded-full h-2">
-                    <div className="h-full bg-emerald-500 rounded-full w-[85%]" />
+                    <div className="h-full bg-emerald-500 rounded-full w-[90%]" />
                   </div>
                 </div>
 
-                {/* Metric 2 */}
-                <div className="bg-slate-50 border border-slate-100 rounded-xl p-3">
+                <div className="bg-slate-50 border border-slate-100 rounded-2xl p-3">
                   <div className="flex justify-between items-center mb-2">
-                    <span className="text-xs font-bold text-slate-700">نبرة الصوت</span>
-                    <span className="text-sky-600 font-black text-xs">92%</span>
+                    <span className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+                      <Mic className="w-3 h-3" />
+                      نبرة الصوت
+                    </span>
+                    <span className="text-sky-600 font-black text-xs">هادئة ومريحة</span>
                   </div>
                   <div className="w-full bg-slate-200 rounded-full h-2">
-                    <div className="h-full bg-sky-500 rounded-full w-[92%]" />
+                    <div className="h-full bg-sky-500 rounded-full w-[85%]" />
                   </div>
                 </div>
 
-                {/* Metric 3 */}
-                <div className="bg-slate-50 border border-slate-100 rounded-xl p-3">
+                <div className="bg-slate-50 border border-slate-100 rounded-2xl p-3">
                   <div className="flex justify-between items-center mb-2">
-                    <span className="text-xs font-bold text-slate-700">الوضوح والسرعة</span>
-                    <span className="text-purple-600 font-black text-xs">ممتاز</span>
+                    <span className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+                      <BotMessageSquare className="w-3 h-3" />
+                      وضوح الأفكار
+                    </span>
+                    <span className="text-purple-600 font-black text-xs">مرتب وواضح</span>
                   </div>
                   <div className="w-full bg-slate-200 rounded-full h-2">
-                    <div className="h-full bg-purple-500 rounded-full w-[100%]" />
+                    <div className="h-full bg-purple-500 rounded-full w-[95%]" />
                   </div>
                 </div>
               </div>
 
-              <div className="bg-orange-50 border border-orange-100 rounded-xl p-4 mt-2 text-center">
-                <p className="text-xs font-bold text-orange-800 mb-1">تعليق حلمان أفندي:</p>
-                <p className="text-sm font-medium text-orange-900/80 leading-relaxed">
-                  نبرة صوتك كانت حماسية جداً ومناسبة للحديث عن التقنية! حافظ على هذا الإبداع.
+              <div className="bg-orange-50 border border-orange-100 rounded-2xl p-4 mt-2 text-center relative">
+                <div className="absolute -top-4 -right-2 w-8 h-8 rounded-full border-2 border-white shadow-sm overflow-hidden bg-orange-200">
+                  <Image
+                    src="/assets/halman-avatar.png"
+                    alt="حلمان"
+                    fill
+                    sizes="32px"
+                    className="object-cover"
+                    onError={(e) => {
+                      e.currentTarget.style.display = 'none';
+                    }}
+                  />
+                </div>
+                <p className="text-xs font-bold text-orange-800 mb-1">
+                  ملاحظة من حلمان أفندي
+                </p>
+                <p className="text-sm font-medium text-orange-900/80 leading-7">
+                  أحببت وضوحك أثناء الحديث. الأفكار كانت مرتبة والنبرة مريحة. استمر بالتعبير عن نفسك بهذه الثقة.
                 </p>
               </div>
 
@@ -282,7 +539,7 @@ export default function AssistantPage() {
                 onClick={() => setShowAnalysis(false)}
                 className="w-full bg-slate-100 text-slate-700 font-bold py-3.5 rounded-xl hover:bg-slate-200 active:scale-95 transition-all mt-auto"
               >
-                تدريب جديد
+                تحدي مرئي جديد
               </button>
             </div>
           )}
