@@ -3,12 +3,15 @@ import re
 import json
 import uuid
 import base64
+import asyncio
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from google import genai
+from google.genai import types
 from dotenv import load_dotenv
 
 from database import get_db
@@ -36,7 +39,10 @@ app.add_middleware(
 )
 
 CHAT_MODEL = "gemini-3.1-flash-lite-preview"
+LIVE_MODEL = os.getenv("GEMINI_LIVE_MODEL", "gemini-3.1-flash-live-preview")
 MAX_RECENT_HISTORY = 8
+LIVE_SESSION_TTL_MINUTES = 30
+live_sessions: Dict[str, datetime] = {}
 
 
 # ==========================================
@@ -125,6 +131,26 @@ class LiveSessionBootstrapResponse(BaseModel):
 def require_gemini_client():
     if not GEMINI_API_KEY or client is None:
         raise HTTPException(status_code=500, detail="Gemini API Key is missing.")
+
+
+def create_live_session_context() -> str:
+    session_id = str(uuid.uuid4())
+    live_sessions[session_id] = datetime.now(timezone.utc)
+    return session_id
+
+
+def prune_expired_live_sessions() -> None:
+    now = datetime.now(timezone.utc)
+    expired = [
+        sid for sid, created_at in live_sessions.items()
+        if now - created_at > timedelta(minutes=LIVE_SESSION_TTL_MINUTES)
+    ]
+    for sid in expired:
+        live_sessions.pop(sid, None)
+
+
+def pop_live_session_context(session_id: str) -> bool:
+    return live_sessions.pop(session_id, None) is not None
 
 
 def normalize_history_role(role: str) -> str:
@@ -650,47 +676,158 @@ async def transcribe_audio(file: UploadFile = File(...)):
 
 
 @app.post("/api/live/session", response_model=LiveSessionResponse)
-def create_live_session_scaffold():
-    # TODO: Replace with Gemini Live API session creation and WS credentials.
-    session_id = str(uuid.uuid4())
+def create_live_session():
+    require_gemini_client()
+    prune_expired_live_sessions()
+    session_id = create_live_session_context()
     return LiveSessionResponse(
         status="ready_for_transport",
         session_id=session_id,
         websocket_path=f"/api/live/ws/{session_id}",
-        live_ai_connected=False,
-        message="Live transport scaffold is ready. Gemini Live streaming credentials are pending integration.",
+        live_ai_connected=True,
+        message="Gemini Live session is ready.",
     )
+
+
+async def relay_live_responses(gemini_session: Any, browser_ws: WebSocket):
+    assistant_speaking = False
+    last_output_text = ""
+
+    async for response in gemini_session.receive():
+        server_content = getattr(response, "server_content", None)
+        if not server_content:
+            continue
+
+        model_turn = getattr(server_content, "model_turn", None)
+        if model_turn and getattr(model_turn, "parts", None):
+            for part in model_turn.parts:
+                inline_data = getattr(part, "inline_data", None)
+                if not inline_data or not getattr(inline_data, "data", None):
+                    continue
+
+                audio_bytes = inline_data.data
+                if isinstance(audio_bytes, str):
+                    audio_b64 = audio_bytes
+                else:
+                    audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
+
+                if not assistant_speaking:
+                    assistant_speaking = True
+                    await browser_ws.send_json({"event": "assistant_speaking_start"})
+
+                await browser_ws.send_json(
+                    {
+                        "event": "audio_output_chunk",
+                        "audio_base64": audio_b64,
+                        "mime_type": getattr(inline_data, "mime_type", "audio/pcm;rate=24000"),
+                    }
+                )
+
+        input_tx = getattr(server_content, "input_transcription", None)
+        if input_tx and getattr(input_tx, "text", None):
+            await browser_ws.send_json({"event": "transcript_delta", "source": "user", "text": input_tx.text})
+
+        output_tx = getattr(server_content, "output_transcription", None)
+        if output_tx and getattr(output_tx, "text", None):
+            last_output_text = output_tx.text
+            await browser_ws.send_json({"event": "transcript_delta", "source": "assistant", "text": output_tx.text})
+
+        if getattr(server_content, "turn_complete", False):
+            if last_output_text:
+                await browser_ws.send_json({"event": "transcript_final", "source": "assistant", "text": last_output_text})
+                last_output_text = ""
+            if assistant_speaking:
+                assistant_speaking = False
+                await browser_ws.send_json({"event": "assistant_speaking_stop"})
 
 
 @app.websocket("/api/live/ws/{session_id}")
 async def live_session_websocket(session_id: str, websocket: WebSocket):
     await websocket.accept()
-    try:
-        await websocket.send_json(
-            LiveSessionBootstrapResponse(
-                connected=True,
-                session_id=session_id,
-                message="WebSocket channel established. Live AI stream is not wired yet.",
-            ).model_dump()
-        )
-        while True:
-            payload: Dict[str, Any] = await websocket.receive_json()
-            event = clean_text(str(payload.get("event", "")))
-            if event == "ping":
-                await websocket.send_json({"event": "pong"})
-            elif event == "disconnect":
-                await websocket.close()
-                break
-            else:
-                await websocket.send_json(
-                    {
-                        "event": "ack",
-                        "message": "Event received on scaffold transport.",
-                        "received_event": event,
-                    }
-                )
-    except WebSocketDisconnect:
+    if session_id not in live_sessions:
+        await websocket.send_json({"event": "live_error", "message": "Live session is missing or expired."})
+        await websocket.close(code=4404)
         return
+
+    require_gemini_client()
+    live_receive_task: Optional[asyncio.Task] = None
+    try:
+        live_config = {
+            "response_modalities": ["AUDIO"],
+            "input_audio_transcription": {},
+            "output_audio_transcription": {},
+        }
+
+        async with client.aio.live.connect(model=LIVE_MODEL, config=live_config) as gemini_live_session:
+            await websocket.send_json(
+                LiveSessionBootstrapResponse(
+                    connected=True,
+                    session_id=session_id,
+                    message="Gemini Live WebSocket connected.",
+                ).model_dump()
+            )
+            await websocket.send_json({"event": "session_ready", "session_id": session_id})
+
+            live_receive_task = asyncio.create_task(relay_live_responses(gemini_live_session, websocket))
+
+            while True:
+                payload: Dict[str, Any] = await websocket.receive_json()
+                event = clean_text(str(payload.get("event", "")))
+
+                if event == "ping":
+                    await websocket.send_json({"event": "pong"})
+                    continue
+
+                if event == "disconnect":
+                    break
+
+                if event == "audio_input_chunk":
+                    audio_b64 = str(payload.get("audio_base64", "")).strip()
+                    mime_type = str(payload.get("mime_type", "audio/pcm;rate=16000")).strip() or "audio/pcm;rate=16000"
+                    if not audio_b64:
+                        continue
+                    try:
+                        chunk = base64.b64decode(audio_b64, validate=True)
+                    except Exception:
+                        await websocket.send_json({"event": "live_error", "message": "Invalid audio chunk encoding."})
+                        continue
+                    await gemini_live_session.send_realtime_input(
+                        audio=types.Blob(data=chunk, mime_type=mime_type)
+                    )
+                    continue
+
+                if event == "text_input":
+                    text = str(payload.get("text", "")).strip()
+                    if text:
+                        await gemini_live_session.send_realtime_input(text=text)
+                    continue
+
+                await websocket.send_json({"event": "live_error", "message": f"Unsupported live event: {event}"})
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        try:
+            await websocket.send_json({"event": "live_error", "message": f"Gemini Live bridge error: {str(e)}"})
+        except Exception:
+            pass
+    finally:
+        if live_receive_task:
+            live_receive_task.cancel()
+            try:
+                await live_receive_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
+        pop_live_session_context(session_id)
+        try:
+            await websocket.send_json({"event": "session_closed", "session_id": session_id})
+        except Exception:
+            pass
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 @app.post("/api/analyze-audio", response_model=AnalysisResponse)
