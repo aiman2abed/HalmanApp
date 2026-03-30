@@ -1,7 +1,7 @@
 import os
 import re
 import json
-from typing import List, Literal, Optional
+from typing import Any, List, Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -198,54 +198,77 @@ def fallback_blocks_from_text(text: str) -> List[ContentBlock]:
     return [ContentBlock(type="paragraph", text=p) for p in paragraphs]
 
 
-def parse_model_response(raw_text: str) -> ChatResponse:
-    cleaned = clean_text(raw_text)
+def parse_json_response(raw_text: str) -> Optional[dict]:
+    try:
+        return json.loads(raw_text)
+    except json.JSONDecodeError:
+        pass
+
+    # Robust fallback: sometimes models wrap JSON in extra text.
+    json_match = re.search(r"\{[\s\S]*\}", raw_text)
+    if not json_match:
+        return None
 
     try:
-        parsed = json.loads(cleaned)
-        reply = clean_text(parsed.get("reply", ""))
-        raw_blocks = parsed.get("blocks", [])
+        return json.loads(json_match.group(0))
+    except json.JSONDecodeError:
+        return None
 
-        blocks: List[ContentBlock] = []
-        for block in raw_blocks:
-            block_type = block.get("type", "paragraph")
-            if block_type == "list":
-                blocks.append(
-                    ContentBlock(
-                        type="list",
-                        items=block.get("items", []),
-                        text=block.get("text", "")
-                    )
+
+def normalize_content_blocks(raw_blocks: Any) -> List[ContentBlock]:
+    if not isinstance(raw_blocks, list):
+        return []
+
+    blocks: List[ContentBlock] = []
+    for block in raw_blocks:
+        if not isinstance(block, dict):
+            continue
+
+        block_type = str(block.get("type", "paragraph")).strip().lower()
+        text = clean_text(str(block.get("text", "")))
+
+        if block_type == "list":
+            raw_items = block.get("items", [])
+            items = [clean_text(str(item)) for item in raw_items if str(item).strip()]
+            if items or text:
+                blocks.append(ContentBlock(type="list", text=text, items=items))
+        elif block_type == "code":
+            blocks.append(
+                ContentBlock(
+                    type="code",
+                    text=text,
+                    language=clean_text(str(block.get("language", ""))) or None
                 )
-            elif block_type == "code":
-                blocks.append(
-                    ContentBlock(
-                        type="code",
-                        text=block.get("text", ""),
-                        language=block.get("language")
-                    )
-                )
-            elif block_type == "title":
-                blocks.append(ContentBlock(type="title", text=block.get("text", "")))
-            else:
-                blocks.append(ContentBlock(type="paragraph", text=block.get("text", "")))
+            )
+        elif block_type == "title":
+            if text:
+                blocks.append(ContentBlock(type="title", text=text))
+        else:
+            if text:
+                blocks.append(ContentBlock(type="paragraph", text=text))
 
-        if not blocks:
-            blocks = fallback_blocks_from_text(reply)
+    return blocks
 
-        if not reply:
-            reply = " ".join(
-                [b.text for b in blocks if b.type in {"title", "paragraph"} and b.text]
-            ).strip()
 
-        return ChatResponse(reply=reply, blocks=blocks)
-
-    except Exception:
+def parse_model_response(raw_text: str) -> ChatResponse:
+    cleaned = clean_text(raw_text)
+    parsed = parse_json_response(cleaned)
+    if not isinstance(parsed, dict):
         fallback_reply = cleaned or "أكيد، أنا معك. احكيلي شو بدك نبدأ فيه."
-        return ChatResponse(
-            reply=fallback_reply,
-            blocks=fallback_blocks_from_text(fallback_reply)
-        )
+        return ChatResponse(reply=fallback_reply, blocks=fallback_blocks_from_text(fallback_reply))
+
+    reply = clean_text(str(parsed.get("reply", "")))
+    blocks = normalize_content_blocks(parsed.get("blocks", []))
+
+    if not blocks:
+        blocks = fallback_blocks_from_text(reply)
+
+    if not reply:
+        reply = " ".join([b.text for b in blocks if b.type in {"title", "paragraph"} and b.text]).strip()
+    if not reply:
+        reply = "أكيد، أنا معك. احكيلي شو بدك نبدأ فيه."
+
+    return ChatResponse(reply=reply, blocks=blocks)
 
 
 def generate_chat_reply(request: ChatRequest) -> ChatResponse:
