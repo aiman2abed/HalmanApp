@@ -1,15 +1,19 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import {
   Send,
-  User,
   Video,
   Mic,
   Sparkles,
   StopCircle,
   Smile,
   Code2,
+  Camera,
+  RotateCcw,
+  Radio,
+  Upload,
+  Brain,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import Image from 'next/image';
@@ -42,13 +46,53 @@ interface SendPromptOptions {
 }
 
 type VoiceInputStatus = 'idle' | 'recording' | 'transcribing' | 'sending';
+type WorkspaceMode = 'chat' | 'live' | 'analyzer';
 type LiveModeStatus =
   | 'idle'
   | 'requesting_permissions'
   | 'ready'
-  | 'starting'
+  | 'connecting'
   | 'connected'
+  | 'listening'
+  | 'assistant_speaking'
+  | 'disconnected'
   | 'error';
+type AnalyzerInputMode = 'upload_audio' | 'upload_video' | 'record_audio' | 'record_video';
+type AnalyzerStatus = 'idle' | 'recording' | 'processing' | 'error' | 'done';
+
+interface LiveSessionApiResponse {
+  status: 'ready_for_transport';
+  message: string;
+  session_id: string;
+  websocket_path: string;
+  live_ai_connected: boolean;
+}
+
+interface AnalysisSection {
+  title: string;
+  points: string[];
+}
+
+interface AnalysisMetric {
+  label: string;
+  score: number;
+  note: string;
+}
+
+interface AnalyzerResponse {
+  title: string;
+  summary: string;
+  sections: AnalysisSection[];
+  metrics: AnalysisMetric[];
+  tips: string[];
+  hints: string[];
+  availability_notes: string[];
+}
+
+interface LiveSessionConnection {
+  sessionId: string;
+  socket: WebSocket;
+}
 
 // ==========================================
 // UI HELPERS
@@ -172,6 +216,56 @@ function MessageContent({
   );
 }
 
+function LiveAvatar({ status }: { status: LiveModeStatus }) {
+  const isListening = status === 'listening';
+  const isSpeaking = status === 'assistant_speaking';
+  const isDisconnected = status === 'disconnected' || status === 'error';
+
+  const ringClass = isSpeaking
+    ? 'border-orange-300 shadow-[0_0_40px_rgba(249,115,22,0.45)]'
+    : isListening
+      ? 'border-sky-300 shadow-[0_0_34px_rgba(56,189,248,0.35)]'
+      : isDisconnected
+        ? 'border-slate-300 opacity-70'
+        : 'border-orange-200 shadow-[0_0_28px_rgba(249,115,22,0.22)]';
+
+  return (
+    <div className="relative w-36 h-36 md:w-44 md:h-44 mx-auto">
+      <motion.div
+        animate={{
+          scale: isSpeaking ? [1, 1.08, 1] : isListening ? [1, 1.04, 1] : [1, 1.02, 1],
+          y: [0, -4, 0],
+        }}
+        transition={{ duration: isSpeaking ? 0.8 : 2.6, repeat: Infinity }}
+        className={`absolute inset-0 rounded-full border-4 ${ringClass} transition-all`}
+      />
+      <motion.div
+        animate={{ opacity: [0.2, 0.45, 0.2], scale: [0.95, 1.08, 0.95] }}
+        transition={{ duration: 2.4, repeat: Infinity }}
+        className={`absolute -inset-2 rounded-full ${
+          isDisconnected ? 'bg-slate-200/40' : isSpeaking ? 'bg-orange-300/30' : 'bg-sky-300/25'
+        }`}
+      />
+      <div className="relative w-full h-full rounded-full overflow-hidden border-4 border-white shadow-xl bg-orange-100">
+        <Image
+          src="/assets/halman-avatar.png"
+          alt="حلمان أفندي"
+          fill
+          sizes="176px"
+          className="object-cover"
+        />
+      </div>
+      {!isDisconnected && (
+        <motion.span
+          animate={{ scaleY: [1, 0.05, 1], opacity: [0.16, 0.4, 0.16] }}
+          transition={{ duration: 4.8, repeat: Infinity, repeatDelay: 3.5 }}
+          className="absolute left-7 right-7 top-[54px] h-[3px] rounded-full bg-slate-700"
+        />
+      )}
+    </div>
+  );
+}
+
 // ==========================================
 // MAIN PAGE
 // ==========================================
@@ -198,23 +292,38 @@ export default function AssistantPage() {
     },
   ]);
 
+  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>('chat');
   const [inputValue, setInputValue] = useState('');
   const [isThinking, setIsThinking] = useState(false);
   const [voiceInputStatus, setVoiceInputStatus] = useState<VoiceInputStatus>('idle');
   const [recordingSeconds, setRecordingSeconds] = useState(0);
+
   const [liveModeStatus, setLiveModeStatus] = useState<LiveModeStatus>('idle');
   const [liveModeError, setLiveModeError] = useState('');
-  const [copiedStateMap, setCopiedStateMap] = useState<Record<string, boolean>>(
-    {}
-  );
+  const [liveMicActive, setLiveMicActive] = useState(false);
+  const [liveCameraActive, setLiveCameraActive] = useState(false);
+
+  const [analyzerInputMode, setAnalyzerInputMode] = useState<AnalyzerInputMode>('upload_audio');
+  const [analyzerStatus, setAnalyzerStatus] = useState<AnalyzerStatus>('idle');
+  const [analyzerError, setAnalyzerError] = useState('');
+  const [analyzerResult, setAnalyzerResult] = useState<AnalyzerResponse | null>(null);
+  const [analyzerSourceName, setAnalyzerSourceName] = useState('');
+
+  const [copiedStateMap, setCopiedStateMap] = useState<Record<string, boolean>>({});
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioStreamRef = useRef<MediaStream | null>(null);
   const audioChunksRef = useRef<BlobPart[]>([]);
   const cancelRecordingRef = useRef(false);
+
   const liveStreamRef = useRef<MediaStream | null>(null);
   const liveVideoRef = useRef<HTMLVideoElement>(null);
+  const liveConnectionRef = useRef<LiveSessionConnection | null>(null);
+
+  const analyzerRecorderRef = useRef<MediaRecorder | null>(null);
+  const analyzerStreamRef = useRef<MediaStream | null>(null);
+  const analyzerChunksRef = useRef<BlobPart[]>([]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -238,7 +347,11 @@ export default function AssistantPage() {
   useEffect(() => {
     return () => {
       audioStreamRef.current?.getTracks().forEach((track) => track.stop());
+      liveConnectionRef.current?.socket.close();
+      liveConnectionRef.current = null;
       liveStreamRef.current?.getTracks().forEach((track) => track.stop());
+      analyzerRecorderRef.current?.stop();
+      analyzerStreamRef.current?.getTracks().forEach((track) => track.stop());
     };
   }, []);
 
@@ -312,9 +425,8 @@ export default function AssistantPage() {
     if (!trimmedPrompt || isThinking) return;
 
     const appendUserMessage = options.appendUserMessage ?? true;
-    const userMsgId = `user-${Date.now()}`;
     const userMessage: Message = {
-      id: userMsgId,
+      id: `user-${Date.now()}`,
       sender: 'user',
       text: trimmedPrompt,
       timestamp: new Date(),
@@ -348,12 +460,11 @@ export default function AssistantPage() {
       if (!response.ok) throw new Error('Failed to reach backend');
 
       const data: ChatApiResponse = await response.json();
-      const botMsgId = `bot-${Date.now()}`;
 
       setMessages((prev) => [
         ...prev,
         {
-          id: botMsgId,
+          id: `bot-${Date.now()}`,
           sender: 'bot',
           text: data.reply,
           blocks: normalizeBlocks(data.blocks, data.reply),
@@ -514,32 +625,60 @@ export default function AssistantPage() {
     await startAudioRecording();
   };
 
+  const stopLiveTracks = () => {
+    liveStreamRef.current?.getTracks().forEach((track) => track.stop());
+    liveStreamRef.current = null;
+    setLiveMicActive(false);
+    setLiveCameraActive(false);
+    if (liveVideoRef.current) {
+      liveVideoRef.current.srcObject = null;
+    }
+  };
+
+  const handleLiveConnectionError = (message: string) => {
+    setLiveModeError(message);
+    setLiveModeStatus('error');
+    liveConnectionRef.current?.socket.close();
+    liveConnectionRef.current = null;
+  };
+
+  const handleAssistantSpeakingStart = () => {
+    setLiveModeStatus('assistant_speaking');
+  };
+
+  const handleAssistantSpeakingStop = () => {
+    setLiveModeStatus('listening');
+  };
+
   const requestLivePermissions = async () => {
     setLiveModeStatus('requesting_permissions');
     setLiveModeError('');
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
-        video: true,
-      });
-      liveStreamRef.current?.getTracks().forEach((track) => track.stop());
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+      stopLiveTracks();
       liveStreamRef.current = stream;
+      setLiveMicActive(stream.getAudioTracks().some((track) => track.enabled));
+      setLiveCameraActive(stream.getVideoTracks().some((track) => track.enabled));
       if (liveVideoRef.current) {
         liveVideoRef.current.srcObject = stream;
       }
       setLiveModeStatus('ready');
     } catch (error) {
       console.error('Live permissions error:', error);
-      setLiveModeStatus('error');
-      setLiveModeError(
-        'لم أستطع تشغيل الكاميرا والمايك. تأكد من السماح بالأذونات ثم أعد المحاولة.'
-      );
+      stopLiveTracks();
+      const errName = (error as DOMException)?.name;
+      const permissionMessage = errName === 'NotAllowedError'
+        ? 'تم رفض إذن الكاميرا أو الميكروفون. فعّل الأذونات من إعدادات المتصفح.'
+        : errName === 'NotFoundError'
+          ? 'لم يتم العثور على كاميرا أو ميكروفون متاح على هذا الجهاز.'
+          : 'تعذر تشغيل الكاميرا والميكروفون الآن. حاول مرة أخرى.';
+      handleLiveConnectionError(permissionMessage);
     }
   };
 
-  const handleStartLiveMode = async () => {
-    if (liveModeStatus === 'connected' || liveModeStatus === 'starting') return;
+  const startLiveSession = async () => {
+    if (liveModeStatus === 'connecting' || liveModeStatus === 'connected') return;
 
     if (!liveStreamRef.current) {
       await requestLivePermissions();
@@ -547,35 +686,184 @@ export default function AssistantPage() {
 
     if (!liveStreamRef.current) return;
 
-    setLiveModeStatus('starting');
+    setLiveModeStatus('connecting');
     setLiveModeError('');
 
     try {
-      const response = await fetch('http://localhost:8000/api/live/session', {
-        method: 'POST',
-      });
+      const response = await fetch('http://localhost:8000/api/live/session', { method: 'POST' });
+      if (!response.ok) throw new Error('Failed live bootstrap');
 
-      if (!response.ok) {
-        throw new Error('Failed to start live session scaffold');
-      }
+      const session: LiveSessionApiResponse = await response.json();
+      const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+      const wsUrl = `${protocol}://localhost:8000${session.websocket_path}`;
+      const ws = new WebSocket(wsUrl);
 
-      // TODO: Use live-session response to connect websocket transport for Gemini Live API.
-      setLiveModeStatus('connected');
+      ws.onopen = () => {
+        setLiveModeStatus('connected');
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data) as { event?: string };
+          if (payload.event === 'assistant_speaking_start') {
+            handleAssistantSpeakingStart();
+          } else if (payload.event === 'assistant_speaking_stop') {
+            handleAssistantSpeakingStop();
+          } else if (payload.event === 'pong' || payload.event === 'ack') {
+            if (liveModeStatus !== 'assistant_speaking') {
+              setLiveModeStatus('listening');
+            }
+          }
+        } catch {
+          // ignore malformed transport scaffold messages
+        }
+      };
+
+      ws.onerror = () => {
+        handleLiveConnectionError('انقطع اتصال الوضع المباشر. تقدر تعيد الاتصال بدون خسارة الدردشة.');
+      };
+
+      ws.onclose = () => {
+        if (liveModeStatus !== 'idle' && liveModeStatus !== 'error') {
+          setLiveModeStatus('disconnected');
+          setLiveModeError('تم فصل الجلسة المباشرة. اضغط إعادة الاتصال للمتابعة.');
+        }
+      };
+
+      liveConnectionRef.current = { sessionId: session.session_id, socket: ws };
     } catch (error) {
-      console.error('Live mode start error:', error);
-      setLiveModeStatus('error');
-      setLiveModeError('بدأنا التحضير للبث الحي لكن الاتصال فشل. حاول مرة ثانية.');
+      console.error('Live session start error:', error);
+      handleLiveConnectionError('تعذر بدء الجلسة المباشرة حالياً. يمكنك المتابعة عبر الدردشة أو إعادة المحاولة.');
     }
   };
 
-  const handleEndLiveMode = () => {
-    liveStreamRef.current?.getTracks().forEach((track) => track.stop());
-    liveStreamRef.current = null;
-    if (liveVideoRef.current) {
-      liveVideoRef.current.srcObject = null;
+  const stopLiveSession = () => {
+    if (liveConnectionRef.current?.socket.readyState === WebSocket.OPEN) {
+      liveConnectionRef.current.socket.send(JSON.stringify({ event: 'disconnect' }));
     }
+    liveConnectionRef.current?.socket.close();
+    liveConnectionRef.current = null;
+    stopLiveTracks();
     setLiveModeError('');
     setLiveModeStatus('idle');
+  };
+
+  const reconnectLiveSession = async () => {
+    liveConnectionRef.current?.socket.close();
+    liveConnectionRef.current = null;
+    if (!liveStreamRef.current) {
+      await requestLivePermissions();
+    }
+    await startLiveSession();
+  };
+
+  const runAnalyzer = async (blob: Blob, sourceName: string) => {
+    const isAudio = blob.type.startsWith('audio/');
+    const endpoint = isAudio ? '/api/analyze-audio' : '/api/analyze-video';
+
+    setAnalyzerStatus('processing');
+    setAnalyzerError('');
+    setAnalyzerSourceName(sourceName);
+
+    const form = new FormData();
+    form.append('file', blob, sourceName);
+
+    try {
+      const response = await fetch(`http://localhost:8000${endpoint}`, {
+        method: 'POST',
+        body: form,
+      });
+
+      if (!response.ok) throw new Error('Analyzer request failed');
+
+      const data: AnalyzerResponse = await response.json();
+      setAnalyzerResult(data);
+      setAnalyzerStatus('done');
+    } catch (error) {
+      console.error('Analyzer error:', error);
+      setAnalyzerStatus('error');
+      setAnalyzerError('تعذر إكمال التحليل الآن. تأكد من الملف ثم أعد المحاولة.');
+    }
+  };
+
+  const handleAnalyzerFileUpload = async (file: File | null) => {
+    if (!file) return;
+
+    const audioMode = analyzerInputMode === 'upload_audio';
+    const videoMode = analyzerInputMode === 'upload_video';
+
+    if (audioMode && !file.type.startsWith('audio/')) {
+      setAnalyzerStatus('error');
+      setAnalyzerError('الرجاء اختيار ملف صوتي صحيح.');
+      return;
+    }
+    if (videoMode && !file.type.startsWith('video/')) {
+      setAnalyzerStatus('error');
+      setAnalyzerError('الرجاء اختيار ملف فيديو صحيح.');
+      return;
+    }
+
+    await runAnalyzer(file, file.name || (audioMode ? 'uploaded-audio.webm' : 'uploaded-video.webm'));
+  };
+
+  const startAnalyzerRecording = async () => {
+    if (analyzerStatus === 'recording') return;
+
+    const wantsAudio = analyzerInputMode === 'record_audio';
+    const wantsVideo = analyzerInputMode === 'record_video';
+
+    if (!wantsAudio && !wantsVideo) return;
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: wantsVideo,
+      });
+      analyzerStreamRef.current = stream;
+
+      const preferredMime = wantsVideo
+        ? (MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus') ? 'video/webm;codecs=vp9,opus' : 'video/webm')
+        : (MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm');
+
+      const recorder = new MediaRecorder(stream, { mimeType: preferredMime });
+      analyzerRecorderRef.current = recorder;
+      analyzerChunksRef.current = [];
+
+      recorder.ondataavailable = (event: BlobEvent) => {
+        if (event.data.size > 0) analyzerChunksRef.current.push(event.data);
+      };
+
+      recorder.onstop = async () => {
+        const blob = new Blob(analyzerChunksRef.current, { type: recorder.mimeType || preferredMime });
+        analyzerStreamRef.current?.getTracks().forEach((track) => track.stop());
+        analyzerStreamRef.current = null;
+        analyzerRecorderRef.current = null;
+        analyzerChunksRef.current = [];
+
+        if (blob.size === 0) {
+          setAnalyzerStatus('error');
+          setAnalyzerError('لم يتم التقاط محتوى كافٍ للتحليل. حاول تسجيل أوضح.');
+          return;
+        }
+
+        const filename = wantsAudio ? 'recorded-audio.webm' : 'recorded-video.webm';
+        await runAnalyzer(blob, filename);
+      };
+
+      recorder.start();
+      setAnalyzerStatus('recording');
+      setAnalyzerError('');
+    } catch (error) {
+      console.error('Analyzer recording permission error:', error);
+      setAnalyzerStatus('error');
+      setAnalyzerError('تعذر بدء التسجيل. تحقق من إذن الكاميرا/الميكروفون ثم أعد المحاولة.');
+    }
+  };
+
+  const stopAnalyzerRecordAndAnalyze = () => {
+    if (!analyzerRecorderRef.current || analyzerRecorderRef.current.state === 'inactive') return;
+    analyzerRecorderRef.current.stop();
+    setAnalyzerStatus('processing');
   };
 
   const voiceStatusLabel =
@@ -588,17 +876,26 @@ export default function AssistantPage() {
           : '';
 
   const liveStatusLabel: Record<LiveModeStatus, string> = {
-    idle: 'اضغط على تشغيل الكاميرا والمايك للبدء.',
-    requesting_permissions: 'جاري طلب إذن الكاميرا والمايك...',
-    ready: 'الكاميرا جاهزة. يمكنك بدء الجلسة الحية.',
-    starting: 'جاري بدء وضع المحادثة الحية...',
-    connected: 'وضع المحادثة الحية متصل (الردود اللحظية قيد التطوير).',
-    error: liveModeError || 'حدث خطأ في وضع المحادثة الحية.',
+    idle: 'اضغط بدء مباشر لتفعيل الجلسة الحية.',
+    requesting_permissions: 'جاري طلب إذن الميكروفون والكاميرا...',
+    ready: 'تم تجهيز الكاميرا والميكروفون. يمكنك بدء الاتصال المباشر.',
+    connecting: 'جاري إنشاء اتصال مباشر آمن...',
+    connected: 'تم الاتصال. بانتظار أحداث الجلسة اللحظية.',
+    listening: 'حلمان الآن في وضع الاستماع.',
+    assistant_speaking: 'حلمان يتحدث الآن.',
+    disconnected: 'تم فصل الاتصال المباشر. تقدر تعيد الاتصال فوراً.',
+    error: liveModeError || 'حدث خطأ في الجلسة المباشرة.',
   };
+
+  const liveStateToneClass = useMemo(() => {
+    if (liveModeStatus === 'error' || liveModeStatus === 'disconnected') return 'bg-rose-50 border-rose-100 text-rose-800';
+    if (liveModeStatus === 'assistant_speaking') return 'bg-orange-50 border-orange-100 text-orange-800';
+    if (liveModeStatus === 'listening' || liveModeStatus === 'connected') return 'bg-sky-50 border-sky-100 text-sky-800';
+    return 'bg-slate-50 border-slate-100 text-slate-700';
+  }, [liveModeStatus]);
 
   return (
     <div className="p-3 md:p-6 max-w-7xl mx-auto h-full flex flex-col gap-5">
-      {/* HEADER */}
       <div className="px-1 md:px-2">
         <div className="inline-flex items-center gap-3 bg-white/80 backdrop-blur rounded-2xl px-4 py-3 border border-orange-100 shadow-sm">
           <div className="bg-orange-100 p-2 rounded-xl border border-orange-200 shadow-sm">
@@ -615,11 +912,8 @@ export default function AssistantPage() {
         </div>
       </div>
 
-      {/* GRID */}
       <div className="grid grid-cols-1 xl:grid-cols-[1.2fr_0.8fr] gap-5 flex-1 min-h-0 pb-6">
-        {/* LEFT: CHAT */}
         <div className="bg-white rounded-[28px] shadow-lg border border-slate-100 flex flex-col min-h-[620px] overflow-hidden">
-          {/* CHAT HEADER */}
           <div className="bg-gradient-to-r from-orange-50 to-pink-50 border-b border-orange-100 p-4 md:p-5 flex items-center gap-4 shadow-sm z-10">
             <div className="relative w-14 h-14 rounded-full border-2 border-white shadow-md overflow-hidden bg-orange-200 flex-shrink-0">
               <div className="absolute inset-0 flex items-center justify-center text-orange-500 font-black text-xs">
@@ -652,7 +946,6 @@ export default function AssistantPage() {
             </div>
           </div>
 
-          {/* MESSAGES */}
           <div className="flex-1 p-4 md:p-5 overflow-y-auto space-y-4 bg-slate-50/70">
             <AnimatePresence>
               {messages.map((message) => (
@@ -725,7 +1018,6 @@ export default function AssistantPage() {
             <div ref={messagesEndRef} />
           </div>
 
-          {/* INPUT */}
           <div className="p-3 md:p-4 bg-white border-t border-slate-100">
             <div className="flex gap-2 items-center">
               <button
@@ -775,82 +1067,286 @@ export default function AssistantPage() {
           </div>
         </div>
 
-        {/* RIGHT: VIDEO PANEL */}
         <div className="bg-white rounded-[28px] shadow-lg border border-slate-100 p-4 md:p-6 flex flex-col min-h-[620px]">
           <div className="mb-5">
+            <div className="flex items-center gap-2 bg-slate-50 rounded-2xl p-1 w-fit mb-4">
+              {([
+                { key: 'chat', label: 'دردشة', icon: Sparkles },
+                { key: 'live', label: 'مباشر', icon: Radio },
+                { key: 'analyzer', label: 'تحليل', icon: Brain },
+              ] as const).map((tab) => {
+                const Icon = tab.icon;
+                const active = workspaceMode === tab.key;
+                return (
+                  <button
+                    key={tab.key}
+                    type="button"
+                    onClick={() => setWorkspaceMode(tab.key)}
+                    className={`px-3.5 py-2 rounded-xl text-sm font-bold flex items-center gap-1.5 transition-all ${
+                      active
+                        ? 'bg-white text-orange-700 border border-orange-100 shadow-sm'
+                        : 'text-slate-500 hover:text-slate-700'
+                    }`}
+                  >
+                    <Icon className="w-4 h-4" />
+                    {tab.label}
+                  </button>
+                );
+              })}
+            </div>
+
             <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2 mb-1">
               <Video className="w-5 h-5 text-sky-500" />
-              التدريب التفاعلي
+              {workspaceMode === 'chat'
+                ? 'لوحة المساعدة'
+                : workspaceMode === 'live'
+                  ? 'جلسة مباشرة'
+                  : 'ورشة التحليل'}
             </h2>
             <p className="text-sm text-slate-500 font-medium leading-6">
-              مساحة حقيقية لتجربة الكاميرا والمايك وتجهيز وضع مباشر آمن. الردود اللحظية ستُربط لاحقاً بدون كسر الدردشة الحالية.
+              {workspaceMode === 'chat'
+                ? 'الدردشة والرسائل الصوتية تعمل كما هي. اختر مباشر أو تحليل من الأعلى عند الحاجة.'
+                : workspaceMode === 'live'
+                  ? 'وضع مباشر منفصل عن الدردشة: كاميرا، ميكروفون، وحالة اتصال واضحة مع fallback آمن.'
+                  : 'حلّل صوتك أو فيديوك ثم خذ ملاحظات واضحة: نقاط قوة، تحسينات عملية، وخطوات تالية.'}
             </p>
           </div>
 
-          <div className="flex-1 flex flex-col gap-4">
-            <div className="bg-slate-900 rounded-3xl flex-1 flex items-center justify-center relative overflow-hidden border-4 border-slate-800 min-h-[260px]">
-              {liveStreamRef.current ? (
-                <video
-                  ref={liveVideoRef}
-                  autoPlay
-                  muted
-                  playsInline
-                  className="w-full h-full object-cover"
-                />
-              ) : (
-                <div className="text-center text-slate-300 px-6">
-                  <User className="w-12 h-12 mx-auto mb-2 opacity-70" />
-                  <p className="text-sm font-semibold">لا يوجد بث كاميرا حالياً</p>
-                  <p className="text-xs opacity-80 mt-1">اسمح بالكاميرا والمايك لعرض المعاينة هنا.</p>
+          {workspaceMode === 'chat' && (
+            <div className="flex-1 rounded-3xl border border-dashed border-slate-200 bg-slate-50 flex items-center justify-center px-6 text-center">
+              <div>
+                <Sparkles className="w-8 h-8 text-orange-500 mx-auto mb-2" />
+                <p className="text-sm font-bold text-slate-700">أنت الآن في وضع الدردشة.</p>
+                <p className="text-xs text-slate-500 mt-1 leading-6">لو حابب جلسة كاميرا مباشرة أو تحليل فيديو/صوت، اختر الوضع المناسب من الأعلى.</p>
+              </div>
+            </div>
+          )}
+
+          {workspaceMode === 'live' && (
+            <div className="flex-1 flex flex-col gap-4">
+              <div className="bg-slate-900 rounded-3xl flex-1 flex items-center justify-center relative overflow-hidden border-4 border-slate-800 min-h-[220px]">
+                {liveStreamRef.current ? (
+                  <video ref={liveVideoRef} autoPlay muted playsInline className="w-full h-full object-cover" />
+                ) : (
+                  <div className="text-center text-slate-300 px-6">
+                    <Camera className="w-12 h-12 mx-auto mb-2 opacity-70" />
+                    <p className="text-sm font-semibold">لا يوجد بث كاميرا حالياً</p>
+                    <p className="text-xs opacity-80 mt-1">ابدأ الجلسة المباشرة لعرض المعاينة هنا.</p>
+                  </div>
+                )}
+              </div>
+
+              <div className="rounded-3xl border border-slate-100 p-4 bg-white">
+                <LiveAvatar status={liveModeStatus} />
+                <div className={`mt-4 rounded-2xl border p-3 ${liveStateToneClass}`}>
+                  <p className="text-xs font-bold mb-1">حالة الوضع المباشر:</p>
+                  <p className="text-sm font-semibold leading-7">{liveStatusLabel[liveModeStatus]}</p>
+                </div>
+
+                <div className="mt-3 grid grid-cols-2 gap-2 text-xs font-bold">
+                  <div className={`rounded-xl px-3 py-2 border ${liveMicActive ? 'bg-emerald-50 border-emerald-100 text-emerald-700' : 'bg-slate-50 border-slate-100 text-slate-500'}`}>
+                    <Mic className="w-4 h-4 inline-block ml-1" />
+                    {liveMicActive ? 'الميكروفون يعمل' : 'الميكروفون غير متاح'}
+                  </div>
+                  <div className={`rounded-xl px-3 py-2 border ${liveCameraActive ? 'bg-emerald-50 border-emerald-100 text-emerald-700' : 'bg-slate-50 border-slate-100 text-slate-500'}`}>
+                    <Video className="w-4 h-4 inline-block ml-1" />
+                    {liveCameraActive ? 'الكاميرا تعمل' : 'الكاميرا غير متاحة'}
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                <button
+                  onClick={requestLivePermissions}
+                  disabled={liveModeStatus === 'requesting_permissions' || liveModeStatus === 'connecting'}
+                  className="bg-slate-100 text-slate-700 font-bold py-2.5 rounded-xl hover:bg-slate-200 transition-all disabled:opacity-50"
+                >
+                  تفعيل الأجهزة
+                </button>
+                <button
+                  onClick={startLiveSession}
+                  disabled={liveModeStatus === 'requesting_permissions' || liveModeStatus === 'connecting' || liveModeStatus === 'connected' || liveModeStatus === 'listening' || liveModeStatus === 'assistant_speaking'}
+                  className="bg-gradient-to-r from-sky-400 to-blue-500 text-white font-bold py-2.5 rounded-xl shadow-md shadow-blue-200 active:scale-95 transition-all disabled:opacity-50"
+                >
+                  بدء مباشر
+                </button>
+                <button
+                  onClick={reconnectLiveSession}
+                  disabled={liveModeStatus !== 'disconnected' && liveModeStatus !== 'error'}
+                  className="bg-orange-50 text-orange-700 font-bold py-2.5 rounded-xl hover:bg-orange-100 transition-all disabled:opacity-50 flex items-center justify-center gap-1"
+                >
+                  <RotateCcw className="w-4 h-4" />
+                  إعادة الاتصال
+                </button>
+                <button
+                  onClick={stopLiveSession}
+                  disabled={liveModeStatus === 'idle'}
+                  className="bg-rose-50 text-rose-700 font-bold py-2.5 rounded-xl hover:bg-rose-100 transition-all disabled:opacity-50"
+                >
+                  إنهاء
+                </button>
+              </div>
+
+              <div className="bg-amber-50 border border-amber-100 rounded-2xl p-3 text-xs text-amber-900 leading-6">
+                <strong>ملاحظة شفافة:</strong> تم تجهيز بنية النقل المباشر (Session + WebSocket) مع حالة آمنة. دمج Gemini Live الصوتي اللحظي الكامل محدد كنقطة تطوير تالية بدون أي تزييف.
+              </div>
+            </div>
+          )}
+
+          {workspaceMode === 'analyzer' && (
+            <div className="flex-1 flex flex-col gap-4">
+              <div className="grid grid-cols-2 gap-2">
+                {([
+                  { key: 'upload_audio', label: 'رفع صوت' },
+                  { key: 'upload_video', label: 'رفع فيديو' },
+                  { key: 'record_audio', label: 'تسجيل صوت' },
+                  { key: 'record_video', label: 'تسجيل فيديو' },
+                ] as const).map((mode) => (
+                  <button
+                    key={mode.key}
+                    type="button"
+                    onClick={() => {
+                      setAnalyzerInputMode(mode.key);
+                      setAnalyzerStatus('idle');
+                      setAnalyzerError('');
+                    }}
+                    className={`px-3 py-2 text-sm font-bold rounded-xl border transition-all ${
+                      analyzerInputMode === mode.key
+                        ? 'bg-sky-50 border-sky-200 text-sky-800'
+                        : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    {mode.label}
+                  </button>
+                ))}
+              </div>
+
+              {(analyzerInputMode === 'upload_audio' || analyzerInputMode === 'upload_video') && (
+                <label className="cursor-pointer rounded-2xl border-2 border-dashed border-slate-300 bg-slate-50 p-6 text-center hover:border-sky-300 transition-colors">
+                  <Upload className="w-7 h-7 mx-auto text-slate-500 mb-2" />
+                  <p className="text-sm font-bold text-slate-700">
+                    {analyzerInputMode === 'upload_audio' ? 'اختر ملف صوتي للتحليل' : 'اختر ملف فيديو للتحليل'}
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1">MP3 / WAV / WEBM أو MP4 / WEBM حسب الوضع</p>
+                  <input
+                    type="file"
+                    className="hidden"
+                    accept={analyzerInputMode === 'upload_audio' ? 'audio/*' : 'video/*'}
+                    onChange={(e) => handleAnalyzerFileUpload(e.target.files?.[0] ?? null)}
+                  />
+                </label>
+              )}
+
+              {(analyzerInputMode === 'record_audio' || analyzerInputMode === 'record_video') && (
+                <div className="rounded-2xl border border-slate-200 p-4 bg-slate-50 space-y-3">
+                  <p className="text-sm font-semibold text-slate-700">
+                    {analyzerInputMode === 'record_audio'
+                      ? 'سجّل مقطعاً صوتياً قصيراً ثم حلّله.'
+                      : 'سجّل فيديو قصيراً ثم حلّله.'}
+                  </p>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={startAnalyzerRecording}
+                      disabled={analyzerStatus === 'recording' || analyzerStatus === 'processing'}
+                      className="flex-1 bg-slate-900 text-white py-2 rounded-xl font-bold disabled:opacity-50"
+                    >
+                      بدء التسجيل
+                    </button>
+                    <button
+                      type="button"
+                      onClick={stopAnalyzerRecordAndAnalyze}
+                      disabled={analyzerStatus !== 'recording'}
+                      className="flex-1 bg-rose-50 text-rose-700 py-2 rounded-xl font-bold disabled:opacity-50"
+                    >
+                      إنهاء وتحليل
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              <div className="rounded-2xl border border-slate-100 p-3 bg-white text-sm">
+                <p className="font-bold text-slate-700 mb-1">حالة التحليل</p>
+                <p className="text-slate-600">
+                  {analyzerStatus === 'idle' && 'اختر طريقة الإدخال ثم ابدأ التحليل.'}
+                  {analyzerStatus === 'recording' && 'جاري التسجيل... عند الانتهاء اضغط "إنهاء وتحليل".'}
+                  {analyzerStatus === 'processing' && 'جاري التحليل الآن... هذا قد يستغرق وقتاً قصيراً.'}
+                  {analyzerStatus === 'done' && `اكتمل التحليل بنجاح${analyzerSourceName ? ` (${analyzerSourceName})` : ''}.`}
+                  {analyzerStatus === 'error' && analyzerError}
+                </p>
+              </div>
+
+              {analyzerResult && (
+                <div className="rounded-3xl border border-slate-200 bg-white p-4 overflow-y-auto max-h-[360px] space-y-4">
+                  <div>
+                    <h3 className="text-base font-black text-slate-800">{analyzerResult.title}</h3>
+                    <p className="text-sm text-slate-600 leading-7 mt-1">{analyzerResult.summary}</p>
+                  </div>
+
+                  {analyzerResult.metrics.length > 0 && (
+                    <div className="grid grid-cols-1 gap-2">
+                      {analyzerResult.metrics.map((metric) => (
+                        <div key={metric.label} className="rounded-xl border border-slate-100 p-2.5 bg-slate-50">
+                          <div className="flex items-center justify-between text-xs font-bold text-slate-700 mb-1">
+                            <span>{metric.label}</span>
+                            <span>{metric.score}%</span>
+                          </div>
+                          <div className="h-2 rounded-full bg-slate-200 overflow-hidden mb-1">
+                            <div className="h-full bg-gradient-to-r from-sky-400 to-orange-400" style={{ width: `${Math.max(0, Math.min(100, metric.score))}%` }} />
+                          </div>
+                          <p className="text-xs text-slate-500">{metric.note}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {analyzerResult.sections.map((section) => (
+                    <div key={section.title}>
+                      <p className="font-bold text-slate-800 text-sm mb-1">{section.title}</p>
+                      <ul className="list-disc pr-5 text-sm text-slate-700 space-y-1">
+                        {section.points.map((point, idx) => (
+                          <li key={`${section.title}-${idx}`}>{point}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  ))}
+
+                  {analyzerResult.tips.length > 0 && (
+                    <div>
+                      <p className="font-bold text-orange-700 text-sm mb-1">نصائح عملية</p>
+                      <ul className="list-disc pr-5 text-sm text-slate-700 space-y-1">
+                        {analyzerResult.tips.map((tip, i) => (
+                          <li key={`tip-${i}`}>{tip}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {analyzerResult.hints.length > 0 && (
+                    <div>
+                      <p className="font-bold text-sky-700 text-sm mb-1">خطوات تالية</p>
+                      <ul className="list-disc pr-5 text-sm text-slate-700 space-y-1">
+                        {analyzerResult.hints.map((hint, i) => (
+                          <li key={`hint-${i}`}>{hint}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {analyzerResult.availability_notes.length > 0 && (
+                    <div className="rounded-xl bg-amber-50 border border-amber-100 p-3 text-xs text-amber-900">
+                      <p className="font-bold mb-1">ملاحظة توفر القدرات</p>
+                      <ul className="list-disc pr-5 space-y-1">
+                        {analyzerResult.availability_notes.map((note, i) => (
+                          <li key={`availability-${i}`}>{note}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
-
-            <div className="bg-sky-50 border border-sky-100 rounded-2xl p-4">
-              <p className="text-xs font-bold text-sky-700 mb-1">حالة الوضع الحي:</p>
-              <p className="text-sm font-medium text-slate-700 leading-7">{liveStatusLabel[liveModeStatus]}</p>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-              <button
-                onClick={requestLivePermissions}
-                disabled={
-                  liveModeStatus === 'requesting_permissions' ||
-                  liveModeStatus === 'starting'
-                }
-                className="bg-slate-100 text-slate-700 font-bold py-3 rounded-xl hover:bg-slate-200 transition-all disabled:opacity-50"
-              >
-                تشغيل الكاميرا والمايك
-              </button>
-              <button
-                onClick={handleStartLiveMode}
-                disabled={
-                  liveModeStatus === 'requesting_permissions' ||
-                  liveModeStatus === 'starting' ||
-                  liveModeStatus === 'connected'
-                }
-                className="bg-gradient-to-r from-sky-400 to-blue-500 text-white font-bold py-3 rounded-xl shadow-md shadow-blue-200 active:scale-95 transition-all disabled:opacity-50"
-              >
-                {liveModeStatus === 'connected' ? 'الجلسة الحية تعمل' : 'بدء الجلسة الحية'}
-              </button>
-              <button
-                onClick={handleEndLiveMode}
-                disabled={liveModeStatus === 'idle'}
-                className="bg-rose-50 text-rose-700 font-bold py-3 rounded-xl hover:bg-rose-100 transition-all disabled:opacity-50"
-              >
-                إنهاء الجلسة
-              </button>
-            </div>
-
-            {liveModeStatus === 'connected' && (
-              <div className="bg-orange-50 border border-orange-100 rounded-2xl p-4 text-center">
-                <p className="text-xs font-bold text-orange-800 mb-1">تنبيه مهم</p>
-                <p className="text-sm font-medium text-orange-900/80 leading-7">
-                  المعاينة والكاميرا تعملان الآن فعلياً. التكامل مع الرد الصوتي/المرئي اللحظي سيتم في خطوة لاحقة.
-                </p>
-              </div>
-            )}
-          </div>
+          )}
         </div>
       </div>
     </div>

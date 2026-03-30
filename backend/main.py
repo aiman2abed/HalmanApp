@@ -1,10 +1,11 @@
 import os
 import re
 import json
+import uuid
 import base64
-from typing import Any, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import FastAPI, HTTPException, Depends, UploadFile, File
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from google import genai
@@ -79,7 +80,42 @@ class TranscriptionResponse(BaseModel):
 
 
 class LiveSessionResponse(BaseModel):
-    status: Literal["scaffolded"]
+    status: Literal["ready_for_transport"]
+    message: str
+    session_id: str
+    websocket_path: str
+    live_ai_connected: bool
+
+
+class AnalysisSection(BaseModel):
+    title: str
+    points: List[str] = Field(default_factory=list)
+
+
+class AnalysisMetric(BaseModel):
+    label: str
+    score: int = Field(ge=0, le=100)
+    note: str = ""
+
+
+class AnalysisResponse(BaseModel):
+    title: str
+    summary: str
+    sections: List[AnalysisSection] = Field(default_factory=list)
+    metrics: List[AnalysisMetric] = Field(default_factory=list)
+    tips: List[str] = Field(default_factory=list)
+    hints: List[str] = Field(default_factory=list)
+    availability_notes: List[str] = Field(default_factory=list)
+
+
+class LiveSessionAnalysisRequest(BaseModel):
+    transcript: str
+    context_notes: Optional[str] = ""
+
+
+class LiveSessionBootstrapResponse(BaseModel):
+    connected: bool
+    session_id: str
     message: str
 
 
@@ -281,6 +317,181 @@ def parse_model_response(raw_text: str) -> ChatResponse:
     return ChatResponse(reply=reply, blocks=blocks)
 
 
+def parse_json_object(raw_text: str) -> Optional[dict]:
+    cleaned = clean_text(raw_text)
+    try:
+        parsed = json.loads(cleaned)
+        return parsed if isinstance(parsed, dict) else None
+    except json.JSONDecodeError:
+        pass
+
+    json_match = re.search(r"\{[\s\S]*\}", cleaned)
+    if not json_match:
+        return None
+
+    try:
+        parsed = json.loads(json_match.group(0))
+        return parsed if isinstance(parsed, dict) else None
+    except json.JSONDecodeError:
+        return None
+
+
+def normalize_analysis_response(raw: Optional[dict], fallback_title: str) -> AnalysisResponse:
+    if not isinstance(raw, dict):
+        return AnalysisResponse(
+            title=fallback_title,
+            summary="تم التحليل بنجاح، لكن تنسيق النتيجة كان غير مكتمل. جرّب مرة ثانية للحصول على تفاصيل أكثر.",
+            sections=[],
+            metrics=[],
+            tips=["قسّم الفكرة الرئيسية إلى نقاط قصيرة وواضحة."],
+            hints=["تحليل الوقفة الجسدية غير متاح بالكامل حالياً وسيتم تحسينه لاحقاً."],
+            availability_notes=["تم إرجاع نتيجة احتياطية بسبب تنسيق غير متوقع من النموذج."],
+        )
+
+    sections: List[AnalysisSection] = []
+    for section in raw.get("sections", []):
+        if not isinstance(section, dict):
+            continue
+        title = clean_text(str(section.get("title", "")))
+        points = [clean_text(str(p)) for p in section.get("points", []) if clean_text(str(p))]
+        if title and points:
+            sections.append(AnalysisSection(title=title, points=points))
+
+    metrics: List[AnalysisMetric] = []
+    for metric in raw.get("metrics", []):
+        if not isinstance(metric, dict):
+            continue
+        label = clean_text(str(metric.get("label", "")))
+        try:
+            score = int(metric.get("score", 0))
+        except (TypeError, ValueError):
+            score = 0
+        note = clean_text(str(metric.get("note", "")))
+        if label:
+            metrics.append(AnalysisMetric(label=label, score=max(0, min(100, score)), note=note))
+
+    tips = [clean_text(str(t)) for t in raw.get("tips", []) if clean_text(str(t))]
+    hints = [clean_text(str(t)) for t in raw.get("hints", []) if clean_text(str(t))]
+    availability_notes = [
+        clean_text(str(t)) for t in raw.get("availability_notes", []) if clean_text(str(t))
+    ]
+
+    title = clean_text(str(raw.get("title", ""))) or fallback_title
+    summary = clean_text(str(raw.get("summary", ""))) or "تم التحليل، وهذه أبرز النقاط العملية للتحسين."
+
+    if not availability_notes:
+        availability_notes = ["تحليل الوقفة الجسدية التفصيلي قيد التطوير وسيُربط بنموذج رؤية متخصص لاحقاً."]
+
+    return AnalysisResponse(
+        title=title,
+        summary=summary,
+        sections=sections,
+        metrics=metrics,
+        tips=tips,
+        hints=hints,
+        availability_notes=availability_notes,
+    )
+
+
+def analyze_media_bytes(media_bytes: bytes, mime_type: str, source_kind: str) -> AnalysisResponse:
+    prompt = f"""
+أنت "حلمان أفندي" وتعمل كمدرب أداء واضح وحازم بلطف.
+حلل هذا المحتوى ({source_kind}) وأرجع JSON فقط.
+
+القواعد:
+- أسلوب عربي واضح، عملي، وداعم.
+- كن حازماً بشكل لطيف: حدّد نقاط القوة ثم نقاط التحسين بوضوح.
+- لا تدّعِ تحليلات غير متاحة.
+- إذا كانت دقة تحليل الوقفة الجسدية محدودة، اذكر ذلك بوضوح في availability_notes.
+
+أرجع JSON بهذا الشكل فقط:
+{{
+  "title": "عنوان قصير للتحليل",
+  "summary": "ملخص مباشر",
+  "sections": [
+    {{"title":"الانطباع العام","points":["...","..."]}},
+    {{"title":"نقاط القوة","points":["...","..."]}},
+    {{"title":"مجالات التحسين","points":["...","..."]}},
+    {{"title":"تحليل الوقفة والسياق","points":["...","..."]}}
+  ],
+  "metrics": [
+    {{"label":"وضوح الفكرة","score":78,"note":"..."}},
+    {{"label":"تنظيم الطرح","score":70,"note":"..."}},
+    {{"label":"الإلقاء","score":74,"note":"..."}}
+  ],
+  "tips": ["...","...","..."],
+  "hints": ["...","..."],
+  "availability_notes": ["..."]
+}}
+"""
+
+    response = client.models.generate_content(
+        model=CHAT_MODEL,
+        contents=[
+            {
+                "role": "user",
+                "parts": [
+                    {"text": prompt},
+                    {
+                        "inline_data": {
+                            "mime_type": mime_type,
+                            "data": base64.b64encode(media_bytes).decode("utf-8"),
+                        }
+                    },
+                ],
+            }
+        ],
+    )
+
+    parsed = parse_json_object(getattr(response, "text", "") or "")
+    return normalize_analysis_response(parsed, fallback_title="تحليل أداء حلمان أفندي")
+
+
+def analyze_transcript_text(transcript: str, context_notes: str) -> AnalysisResponse:
+    prompt = f"""
+أنت "حلمان أفندي" وتعمل كمدرب عرض وتواصل.
+حلل النص التالي بلهجة عربية فصيحة بسيطة، ثم أرجع JSON فقط.
+
+النص:
+{transcript}
+
+ملاحظات سياق إضافية:
+{context_notes or "لا توجد"}
+
+التعليمات:
+- كن واضحاً ومباشراً.
+- أعطِ تحسينات قابلة للتطبيق فوراً.
+- لا تدّعِ تحليل وقفة جسدية حقيقي من نص فقط.
+
+أعد JSON بنفس الصيغة:
+{{
+  "title": "...",
+  "summary": "...",
+  "sections": [
+    {{"title":"الانطباع العام","points":["..."]}},
+    {{"title":"نقاط القوة","points":["..."]}},
+    {{"title":"مجالات التحسين","points":["..."]}}
+  ],
+  "metrics": [
+    {{"label":"وضوح الفكرة","score":0,"note":"..."}},
+    {{"label":"تنظيم المحتوى","score":0,"note":"..."}},
+    {{"label":"اللغة والإلقاء النصي","score":0,"note":"..."}}
+  ],
+  "tips": ["..."],
+  "hints": ["..."],
+  "availability_notes": ["تحليل الوقفة غير متاح من النص فقط."]
+}}
+"""
+
+    response = client.models.generate_content(
+        model=CHAT_MODEL,
+        contents=prompt,
+    )
+
+    parsed = parse_json_object(getattr(response, "text", "") or "")
+    return normalize_analysis_response(parsed, fallback_title="تحليل نص الجلسة")
+
+
 def generate_chat_reply(request: ChatRequest) -> ChatResponse:
     input_style = classify_input_style(request.user_message)
     system_instruction = build_system_instruction(
@@ -441,7 +652,90 @@ async def transcribe_audio(file: UploadFile = File(...)):
 @app.post("/api/live/session", response_model=LiveSessionResponse)
 def create_live_session_scaffold():
     # TODO: Replace with Gemini Live API session creation and WS credentials.
+    session_id = str(uuid.uuid4())
     return LiveSessionResponse(
-        status="scaffolded",
-        message="Live mode backend scaffold is ready. Streaming integration is pending.",
+        status="ready_for_transport",
+        session_id=session_id,
+        websocket_path=f"/api/live/ws/{session_id}",
+        live_ai_connected=False,
+        message="Live transport scaffold is ready. Gemini Live streaming credentials are pending integration.",
     )
+
+
+@app.websocket("/api/live/ws/{session_id}")
+async def live_session_websocket(session_id: str, websocket: WebSocket):
+    await websocket.accept()
+    try:
+        await websocket.send_json(
+            LiveSessionBootstrapResponse(
+                connected=True,
+                session_id=session_id,
+                message="WebSocket channel established. Live AI stream is not wired yet.",
+            ).model_dump()
+        )
+        while True:
+            payload: Dict[str, Any] = await websocket.receive_json()
+            event = clean_text(str(payload.get("event", "")))
+            if event == "ping":
+                await websocket.send_json({"event": "pong"})
+            elif event == "disconnect":
+                await websocket.close()
+                break
+            else:
+                await websocket.send_json(
+                    {
+                        "event": "ack",
+                        "message": "Event received on scaffold transport.",
+                        "received_event": event,
+                    }
+                )
+    except WebSocketDisconnect:
+        return
+
+
+@app.post("/api/analyze-audio", response_model=AnalysisResponse)
+async def analyze_audio(file: UploadFile = File(...)):
+    require_gemini_client()
+    audio_bytes = await file.read()
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="Empty audio file.")
+
+    mime_type = (file.content_type or "").strip()
+    if not mime_type.startswith("audio/"):
+        raise HTTPException(status_code=400, detail="Uploaded file must be audio.")
+
+    try:
+        return analyze_media_bytes(audio_bytes, mime_type, source_kind="ملف صوتي")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Audio analysis failed: {str(e)}")
+
+
+@app.post("/api/analyze-video", response_model=AnalysisResponse)
+async def analyze_video(file: UploadFile = File(...)):
+    require_gemini_client()
+    video_bytes = await file.read()
+    if not video_bytes:
+        raise HTTPException(status_code=400, detail="Empty video file.")
+
+    mime_type = (file.content_type or "").strip()
+    if not mime_type.startswith("video/"):
+        raise HTTPException(status_code=400, detail="Uploaded file must be video.")
+
+    try:
+        return analyze_media_bytes(video_bytes, mime_type, source_kind="ملف فيديو")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Video analysis failed: {str(e)}")
+
+
+@app.post("/api/analyze-live-session", response_model=AnalysisResponse)
+def analyze_live_session(request: LiveSessionAnalysisRequest):
+    require_gemini_client()
+    if not request.transcript.strip():
+        raise HTTPException(status_code=400, detail="Transcript is required.")
+    try:
+        return analyze_transcript_text(
+            transcript=request.transcript.strip(),
+            context_notes=(request.context_notes or "").strip(),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Live session analysis failed: {str(e)}")
