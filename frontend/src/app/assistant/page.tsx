@@ -6,9 +6,7 @@ import {
   User,
   Video,
   Mic,
-  CheckCircle,
   Sparkles,
-  BotMessageSquare,
   StopCircle,
   Smile,
   Code2,
@@ -42,6 +40,15 @@ interface ChatApiResponse {
 interface SendPromptOptions {
   appendUserMessage?: boolean;
 }
+
+type VoiceInputStatus = 'idle' | 'recording' | 'transcribing' | 'sending';
+type LiveModeStatus =
+  | 'idle'
+  | 'requesting_permissions'
+  | 'ready'
+  | 'starting'
+  | 'connected'
+  | 'error';
 
 // ==========================================
 // UI HELPERS
@@ -193,18 +200,47 @@ export default function AssistantPage() {
 
   const [inputValue, setInputValue] = useState('');
   const [isThinking, setIsThinking] = useState(false);
-  const [isRecordingAudio, setIsRecordingAudio] = useState(false);
-  const [isRecordingVideo, setIsRecordingVideo] = useState(false);
-  const [showAnalysis, setShowAnalysis] = useState(false);
+  const [voiceInputStatus, setVoiceInputStatus] = useState<VoiceInputStatus>('idle');
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const [liveModeStatus, setLiveModeStatus] = useState<LiveModeStatus>('idle');
+  const [liveModeError, setLiveModeError] = useState('');
   const [copiedStateMap, setCopiedStateMap] = useState<Record<string, boolean>>(
     {}
   );
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioStreamRef = useRef<MediaStream | null>(null);
+  const audioChunksRef = useRef<BlobPart[]>([]);
+  const cancelRecordingRef = useRef(false);
+  const liveStreamRef = useRef<MediaStream | null>(null);
+  const liveVideoRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isThinking]);
+
+  useEffect(() => {
+    if (voiceInputStatus !== 'recording') return;
+
+    const interval = setInterval(() => {
+      setRecordingSeconds((prev) => prev + 1);
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [voiceInputStatus]);
+
+  useEffect(() => {
+    if (!liveVideoRef.current) return;
+    liveVideoRef.current.srcObject = liveStreamRef.current;
+  }, [liveModeStatus]);
+
+  useEffect(() => {
+    return () => {
+      audioStreamRef.current?.getTracks().forEach((track) => track.stop());
+      liveStreamRef.current?.getTracks().forEach((track) => track.stop());
+    };
+  }, []);
 
   const normalizeBlocks = (blocks: MessageBlock[] | undefined, reply: string) => {
     if (blocks && blocks.length > 0) return blocks;
@@ -245,6 +281,30 @@ export default function AssistantPage() {
     } catch (error) {
       console.error('Clipboard copy failed:', error);
     }
+  };
+
+  const pushBotStatusMessage = (title: string, text: string) => {
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: `status-${Date.now()}`,
+        sender: 'bot',
+        text,
+        blocks: [
+          { type: 'title', text: title },
+          { type: 'paragraph', text },
+        ],
+        timestamp: new Date(),
+      },
+    ]);
+  };
+
+  const stopAudioCapture = () => {
+    audioStreamRef.current?.getTracks().forEach((track) => track.stop());
+    audioStreamRef.current = null;
+    mediaRecorderRef.current = null;
+    audioChunksRef.current = [];
+    setRecordingSeconds(0);
   };
 
   const sendPrompt = async (prompt: string, options: SendPromptOptions = {}) => {
@@ -324,6 +384,7 @@ export default function AssistantPage() {
   };
 
   const handleSend = async () => {
+    if (voiceInputStatus === 'transcribing' || voiceInputStatus === 'recording') return;
     const prompt = inputValue;
     setInputValue('');
     await sendPrompt(prompt, { appendUserMessage: true });
@@ -344,22 +405,195 @@ export default function AssistantPage() {
     }
   };
 
-  const handleAudioRecordToggle = () => {
-    if (isRecordingAudio) {
-      setIsRecordingAudio(false);
-      setInputValue('أنا أحب تعلم أشياء جديدة!');
-      setTimeout(() => handleSend(), 500);
-    } else {
-      setIsRecordingAudio(true);
+  const stopAudioRecording = (cancelled: boolean) => {
+    const recorder = mediaRecorderRef.current;
+    if (!recorder || recorder.state === 'inactive') {
+      stopAudioCapture();
+      setVoiceInputStatus('idle');
+      return;
+    }
+
+    cancelRecordingRef.current = cancelled;
+    recorder.stop();
+  };
+
+  const transcribeAndSendAudio = async (audioBlob: Blob) => {
+    setVoiceInputStatus('transcribing');
+
+    const formData = new FormData();
+    formData.append('file', audioBlob, `voice-note.${audioBlob.type.includes('ogg') ? 'ogg' : 'webm'}`);
+
+    try {
+      const response = await fetch('http://localhost:8000/api/transcribe-audio', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) {
+        throw new Error('Audio transcription request failed');
+      }
+
+      const data: { transcript?: string } = await response.json();
+      const transcript = (data.transcript || '').trim();
+
+      if (!transcript) {
+        pushBotStatusMessage('لم أسمع كلمات واضحة', 'حاول تتكلم بصوت أوضح ثم أعد التسجيل.');
+        setVoiceInputStatus('idle');
+        return;
+      }
+
+      setVoiceInputStatus('sending');
+      await sendPrompt(transcript, { appendUserMessage: true });
+      setVoiceInputStatus('idle');
+    } catch (error) {
+      console.error('Audio transcription error:', error);
+      pushBotStatusMessage(
+        'تعذر تحويل الصوت',
+        'صار خلل بسيط أثناء تحويل الصوت إلى نص. حاول مرة ثانية.'
+      );
+      setVoiceInputStatus('idle');
     }
   };
 
-  const handleVideoRecording = () => {
-    setIsRecordingVideo(true);
-    setTimeout(() => {
-      setIsRecordingVideo(false);
-      setShowAnalysis(true);
-    }, 3000);
+  const startAudioRecording = async () => {
+    if (voiceInputStatus !== 'idle') return;
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioStreamRef.current = stream;
+
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : '';
+      const recorder = mimeType
+        ? new MediaRecorder(stream, { mimeType })
+        : new MediaRecorder(stream);
+
+      audioChunksRef.current = [];
+      cancelRecordingRef.current = false;
+      mediaRecorderRef.current = recorder;
+
+      recorder.ondataavailable = (event: BlobEvent) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onstop = async () => {
+        const wasCancelled = cancelRecordingRef.current;
+        const chunks = [...audioChunksRef.current];
+        const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
+        stopAudioCapture();
+
+        if (wasCancelled || blob.size === 0) {
+          setVoiceInputStatus('idle');
+          return;
+        }
+
+        await transcribeAndSendAudio(blob);
+      };
+
+      recorder.start();
+      setRecordingSeconds(0);
+      setVoiceInputStatus('recording');
+    } catch (error) {
+      console.error('Microphone access error:', error);
+      pushBotStatusMessage(
+        'تعذر الوصول للميكروفون',
+        'يبدو أن إذن الميكروفون مرفوض. فعّل الميكروفون من إعدادات المتصفح ثم حاول مرة ثانية.'
+      );
+      setVoiceInputStatus('idle');
+    }
+  };
+
+  const handleAudioRecordToggle = async () => {
+    if (voiceInputStatus === 'recording') {
+      stopAudioRecording(false);
+      return;
+    }
+    await startAudioRecording();
+  };
+
+  const requestLivePermissions = async () => {
+    setLiveModeStatus('requesting_permissions');
+    setLiveModeError('');
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: true,
+      });
+      liveStreamRef.current?.getTracks().forEach((track) => track.stop());
+      liveStreamRef.current = stream;
+      if (liveVideoRef.current) {
+        liveVideoRef.current.srcObject = stream;
+      }
+      setLiveModeStatus('ready');
+    } catch (error) {
+      console.error('Live permissions error:', error);
+      setLiveModeStatus('error');
+      setLiveModeError(
+        'لم أستطع تشغيل الكاميرا والمايك. تأكد من السماح بالأذونات ثم أعد المحاولة.'
+      );
+    }
+  };
+
+  const handleStartLiveMode = async () => {
+    if (liveModeStatus === 'connected' || liveModeStatus === 'starting') return;
+
+    if (!liveStreamRef.current) {
+      await requestLivePermissions();
+    }
+
+    if (!liveStreamRef.current) return;
+
+    setLiveModeStatus('starting');
+    setLiveModeError('');
+
+    try {
+      const response = await fetch('http://localhost:8000/api/live/session', {
+        method: 'POST',
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to start live session scaffold');
+      }
+
+      // TODO: Use live-session response to connect websocket transport for Gemini Live API.
+      setLiveModeStatus('connected');
+    } catch (error) {
+      console.error('Live mode start error:', error);
+      setLiveModeStatus('error');
+      setLiveModeError('بدأنا التحضير للبث الحي لكن الاتصال فشل. حاول مرة ثانية.');
+    }
+  };
+
+  const handleEndLiveMode = () => {
+    liveStreamRef.current?.getTracks().forEach((track) => track.stop());
+    liveStreamRef.current = null;
+    if (liveVideoRef.current) {
+      liveVideoRef.current.srcObject = null;
+    }
+    setLiveModeError('');
+    setLiveModeStatus('idle');
+  };
+
+  const voiceStatusLabel =
+    voiceInputStatus === 'recording'
+      ? `جاري التسجيل... ${recordingSeconds}s`
+      : voiceInputStatus === 'transcribing'
+        ? 'جاري تحويل الصوت إلى نص...'
+        : voiceInputStatus === 'sending'
+          ? 'جاري إرسال الرسالة...'
+          : '';
+
+  const liveStatusLabel: Record<LiveModeStatus, string> = {
+    idle: 'اضغط على تشغيل الكاميرا والمايك للبدء.',
+    requesting_permissions: 'جاري طلب إذن الكاميرا والمايك...',
+    ready: 'الكاميرا جاهزة. يمكنك بدء الجلسة الحية.',
+    starting: 'جاري بدء وضع المحادثة الحية...',
+    connected: 'وضع المحادثة الحية متصل (الردود اللحظية قيد التطوير).',
+    error: liveModeError || 'حدث خطأ في وضع المحادثة الحية.',
   };
 
   return (
@@ -497,12 +731,13 @@ export default function AssistantPage() {
               <button
                 onClick={handleAudioRecordToggle}
                 className={`w-12 h-12 rounded-xl flex items-center justify-center transition-all shadow-md flex-shrink-0 ${
-                  isRecordingAudio
+                  voiceInputStatus === 'recording'
                     ? 'bg-rose-500 text-white animate-pulse shadow-rose-200'
                     : 'bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-800'
                 }`}
+                disabled={isThinking || voiceInputStatus === 'transcribing' || voiceInputStatus === 'sending'}
               >
-                {isRecordingAudio ? (
+                {voiceInputStatus === 'recording' ? (
                   <StopCircle className="w-5 h-5" />
                 ) : (
                   <Mic className="w-5 h-5" />
@@ -511,17 +746,27 @@ export default function AssistantPage() {
 
               <input
                 type="text"
-                value={isRecordingAudio ? 'جاري الاستماع إليك...' : inputValue}
+                value={voiceStatusLabel || inputValue}
                 onChange={(e) => setInputValue(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && handleSend()}
                 placeholder="اكتب رسالة، سؤال، أو حتى كود..."
-                disabled={isThinking || isRecordingAudio}
+                disabled={isThinking || voiceInputStatus !== 'idle'}
                 className="flex-1 bg-slate-50 px-4 py-3 rounded-xl border border-slate-200 focus:border-orange-400 focus:ring-2 focus:ring-orange-100 outline-none transition-all text-sm disabled:opacity-50"
               />
 
+              {voiceInputStatus === 'recording' && (
+                <button
+                  type="button"
+                  onClick={() => stopAudioRecording(true)}
+                  className="px-3 py-2 rounded-xl bg-slate-100 text-slate-700 text-xs font-bold hover:bg-slate-200 transition-colors"
+                >
+                  إلغاء
+                </button>
+              )}
+
               <button
                 onClick={handleSend}
-                disabled={isThinking || (!inputValue.trim() && !isRecordingAudio)}
+                disabled={isThinking || voiceInputStatus !== 'idle' || !inputValue.trim()}
                 className="bg-orange-500 text-white w-12 h-12 rounded-xl flex items-center justify-center hover:bg-orange-600 active:scale-95 transition-all disabled:opacity-50 disabled:active:scale-100 shadow-md shadow-orange-200 flex-shrink-0"
               >
                 <Send className="w-5 h-5 -ml-1" />
@@ -538,126 +783,74 @@ export default function AssistantPage() {
               التدريب التفاعلي
             </h2>
             <p className="text-sm text-slate-500 font-medium leading-6">
-              مساحة تجريبية للصوت والفيديو. الواجهة جاهزة، والتحليل التفصيلي يمكن تطويره لاحقاً بدون كسر الشكل الحالي.
+              مساحة حقيقية لتجربة الكاميرا والمايك وتجهيز وضع مباشر آمن. الردود اللحظية ستُربط لاحقاً بدون كسر الدردشة الحالية.
             </p>
           </div>
 
-          {!showAnalysis ? (
-            <div className="flex-1 flex flex-col gap-4">
-              <div className="bg-slate-900 rounded-3xl flex-1 flex items-center justify-center relative overflow-hidden border-4 border-slate-800">
-                {isRecordingVideo ? (
-                  <div className="text-center animate-pulse">
-                    <div className="w-12 h-12 bg-red-500 rounded-full mx-auto mb-3 shadow-[0_0_20px_rgba(239,68,68,0.6)] flex items-center justify-center border-2 border-white/50">
-                      <Mic className="w-5 h-5 text-white animate-bounce" />
-                    </div>
-                    <p className="text-white text-sm font-bold tracking-wider">
-                      جاري الاستماع والتحليل...
-                    </p>
-                  </div>
-                ) : (
-                  <div className="text-center text-slate-500">
-                    <User className="w-12 h-12 mx-auto mb-2 opacity-50" />
-                    <p className="text-xs font-medium">منطقة الكاميرا التجريبية</p>
-                  </div>
-                )}
-              </div>
+          <div className="flex-1 flex flex-col gap-4">
+            <div className="bg-slate-900 rounded-3xl flex-1 flex items-center justify-center relative overflow-hidden border-4 border-slate-800 min-h-[260px]">
+              {liveStreamRef.current ? (
+                <video
+                  ref={liveVideoRef}
+                  autoPlay
+                  muted
+                  playsInline
+                  className="w-full h-full object-cover"
+                />
+              ) : (
+                <div className="text-center text-slate-300 px-6">
+                  <User className="w-12 h-12 mx-auto mb-2 opacity-70" />
+                  <p className="text-sm font-semibold">لا يوجد بث كاميرا حالياً</p>
+                  <p className="text-xs opacity-80 mt-1">اسمح بالكاميرا والمايك لعرض المعاينة هنا.</p>
+                </div>
+              )}
+            </div>
 
-              <div className="bg-sky-50 border border-sky-100 rounded-2xl p-4">
-                <p className="text-xs font-bold text-sky-700 mb-1">تحدي اليوم:</p>
-                <p className="text-sm font-medium text-slate-700 leading-7">
-                  تحدث لمدة 15 ثانية عن شيء يسعدك. الهدف هنا أن تتكلم براحتك، لا أن تكون مثالياً.
-                </p>
-              </div>
+            <div className="bg-sky-50 border border-sky-100 rounded-2xl p-4">
+              <p className="text-xs font-bold text-sky-700 mb-1">حالة الوضع الحي:</p>
+              <p className="text-sm font-medium text-slate-700 leading-7">{liveStatusLabel[liveModeStatus]}</p>
+            </div>
 
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
               <button
-                onClick={handleVideoRecording}
-                disabled={isRecordingVideo}
-                className="w-full bg-gradient-to-r from-sky-400 to-blue-500 text-white font-bold py-4 rounded-xl shadow-md shadow-blue-200 active:scale-95 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                onClick={requestLivePermissions}
+                disabled={
+                  liveModeStatus === 'requesting_permissions' ||
+                  liveModeStatus === 'starting'
+                }
+                className="bg-slate-100 text-slate-700 font-bold py-3 rounded-xl hover:bg-slate-200 transition-all disabled:opacity-50"
               >
-                <Video className="w-5 h-5" />
-                {isRecordingVideo ? 'حلمان يتابعك الآن...' : 'ابدأ التحدي المرئي'}
+                تشغيل الكاميرا والمايك
+              </button>
+              <button
+                onClick={handleStartLiveMode}
+                disabled={
+                  liveModeStatus === 'requesting_permissions' ||
+                  liveModeStatus === 'starting' ||
+                  liveModeStatus === 'connected'
+                }
+                className="bg-gradient-to-r from-sky-400 to-blue-500 text-white font-bold py-3 rounded-xl shadow-md shadow-blue-200 active:scale-95 transition-all disabled:opacity-50"
+              >
+                {liveModeStatus === 'connected' ? 'الجلسة الحية تعمل' : 'بدء الجلسة الحية'}
+              </button>
+              <button
+                onClick={handleEndLiveMode}
+                disabled={liveModeStatus === 'idle'}
+                className="bg-rose-50 text-rose-700 font-bold py-3 rounded-xl hover:bg-rose-100 transition-all disabled:opacity-50"
+              >
+                إنهاء الجلسة
               </button>
             </div>
-          ) : (
-            <div className="flex-1 flex flex-col justify-center space-y-4 animate-in fade-in zoom-in duration-300">
-              <div className="text-center mb-2">
-                <CheckCircle className="w-12 h-12 text-emerald-500 mx-auto mb-2" />
-                <h3 className="text-xl font-bold text-slate-800">أداء جميل جداً</h3>
-                <p className="text-sm text-slate-500 mt-1">
-                  هذه نتائج تجريبية للواجهة ويمكن لاحقاً ربطها بتحليل حقيقي.
-                </p>
-              </div>
 
-              <div className="space-y-3">
-                <div className="bg-slate-50 border border-slate-100 rounded-2xl p-3">
-                  <div className="flex justify-between items-center mb-2">
-                    <span className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
-                      <User className="w-3 h-3" />
-                      لغة الجسد والثقة
-                    </span>
-                    <span className="text-emerald-600 font-black text-xs">مذهل</span>
-                  </div>
-                  <div className="w-full bg-slate-200 rounded-full h-2">
-                    <div className="h-full bg-emerald-500 rounded-full w-[90%]" />
-                  </div>
-                </div>
-
-                <div className="bg-slate-50 border border-slate-100 rounded-2xl p-3">
-                  <div className="flex justify-between items-center mb-2">
-                    <span className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
-                      <Mic className="w-3 h-3" />
-                      نبرة الصوت
-                    </span>
-                    <span className="text-sky-600 font-black text-xs">هادئة ومريحة</span>
-                  </div>
-                  <div className="w-full bg-slate-200 rounded-full h-2">
-                    <div className="h-full bg-sky-500 rounded-full w-[85%]" />
-                  </div>
-                </div>
-
-                <div className="bg-slate-50 border border-slate-100 rounded-2xl p-3">
-                  <div className="flex justify-between items-center mb-2">
-                    <span className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
-                      <BotMessageSquare className="w-3 h-3" />
-                      وضوح الأفكار
-                    </span>
-                    <span className="text-purple-600 font-black text-xs">مرتب وواضح</span>
-                  </div>
-                  <div className="w-full bg-slate-200 rounded-full h-2">
-                    <div className="h-full bg-purple-500 rounded-full w-[95%]" />
-                  </div>
-                </div>
-              </div>
-
-              <div className="bg-orange-50 border border-orange-100 rounded-2xl p-4 mt-2 text-center relative">
-                <div className="absolute -top-4 -right-2 w-8 h-8 rounded-full border-2 border-white shadow-sm overflow-hidden bg-orange-200">
-                  <Image
-                    src="/assets/halman-avatar.png"
-                    alt="حلمان"
-                    fill
-                    sizes="32px"
-                    className="object-cover"
-                    onError={(e) => {
-                      e.currentTarget.style.display = 'none';
-                    }}
-                  />
-                </div>
-                <p className="text-xs font-bold text-orange-800 mb-1">
-                  ملاحظة من حلمان أفندي
-                </p>
+            {liveModeStatus === 'connected' && (
+              <div className="bg-orange-50 border border-orange-100 rounded-2xl p-4 text-center">
+                <p className="text-xs font-bold text-orange-800 mb-1">تنبيه مهم</p>
                 <p className="text-sm font-medium text-orange-900/80 leading-7">
-                  أحببت وضوحك أثناء الحديث. الأفكار كانت مرتبة والنبرة مريحة. استمر بالتعبير عن نفسك بهذه الثقة.
+                  المعاينة والكاميرا تعملان الآن فعلياً. التكامل مع الرد الصوتي/المرئي اللحظي سيتم في خطوة لاحقة.
                 </p>
               </div>
-
-              <button
-                onClick={() => setShowAnalysis(false)}
-                className="w-full bg-slate-100 text-slate-700 font-bold py-3.5 rounded-xl hover:bg-slate-200 active:scale-95 transition-all mt-auto"
-              >
-                تحدي مرئي جديد
-              </button>
-            </div>
-          )}
+            )}
+          </div>
         </div>
       </div>
     </div>
