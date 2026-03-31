@@ -801,12 +801,8 @@ async def live_session_websocket(session_id: str, websocket: WebSocket):
                     )
                     continue
 
-                if event == "activity_start":
-                    await gemini_live_session.send_realtime_input(activity_start=types.ActivityStart())
-                    continue
-
                 if event == "activity_end":
-                    await gemini_live_session.send_realtime_input(activity_end=types.ActivityEnd())
+                    await gemini_live_session.send_realtime_input(activity_end=True)
                     continue
 
                 if event == "text_input":

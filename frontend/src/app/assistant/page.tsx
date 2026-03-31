@@ -797,10 +797,6 @@ export default function AssistantPage() {
       const isSpeech = rms >= LIVE_SPEECH_THRESHOLD;
 
       if (isSpeech) {
-        if (!liveUserSpeakingRef.current || liveActivityEndSentRef.current) {
-          sendLiveActivityStart(socket);
-        }
-
         liveUserSpeakingRef.current = true;
         liveLastSpeechAtRef.current = now;
         liveActivityEndSentRef.current = false;
@@ -829,11 +825,6 @@ export default function AssistantPage() {
 
   const LIVE_SPEECH_THRESHOLD = 0.018;
   const LIVE_SILENCE_TIMEOUT_MS = 800;
-
-  const sendLiveActivityStart = (socket: WebSocket) => {
-    if (socket.readyState !== WebSocket.OPEN) return;
-    socket.send(JSON.stringify({ event: 'activity_start' }));
-  };
 
   const sendLiveActivityEnd = (socket: WebSocket, force = false) => {
     if (socket.readyState !== WebSocket.OPEN) return;
