@@ -796,6 +796,10 @@ async def live_session_websocket(session_id: str, websocket: WebSocket):
                     )
                     continue
 
+                if event == "activity_end":
+                    await gemini_live_session.send_realtime_input(activity_end=True)
+                    continue
+
                 if event == "text_input":
                     text = str(payload.get("text", "")).strip()
                     if text:

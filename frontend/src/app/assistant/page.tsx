@@ -337,6 +337,9 @@ export default function AssistantPage() {
   const liveOutputPendingRef = useRef(0);
   const liveIsClosingRef = useRef(false);
   const liveModeStatusRef = useRef<LiveModeStatus>('idle');
+  const liveUserSpeakingRef = useRef(false);
+  const liveLastSpeechAtRef = useRef(0);
+  const liveActivityEndSentRef = useRef(true);
 
   const analyzerRecorderRef = useRef<MediaRecorder | null>(null);
   const analyzerStreamRef = useRef<MediaStream | null>(null);
@@ -714,6 +717,9 @@ export default function AssistantPage() {
     }
     liveOutputNextTimeRef.current = 0;
     liveOutputPendingRef.current = 0;
+    liveUserSpeakingRef.current = false;
+    liveLastSpeechAtRef.current = 0;
+    liveActivityEndSentRef.current = true;
   };
 
   const queueAssistantAudioChunk = (audioBase64: string, mimeType?: string) => {
@@ -779,17 +785,54 @@ export default function AssistantPage() {
 
     processor.onaudioprocess = (audioEvent) => {
       if (socket.readyState !== WebSocket.OPEN) return;
-      const pcm16 = floatToPcm16(audioEvent.inputBuffer.getChannelData(0));
-      socket.send(JSON.stringify({
-        event: 'audio_input_chunk',
-        mime_type: 'audio/pcm;rate=16000',
-        audio_base64: bytesToBase64(pcm16),
-      }));
+      if (liveModeStatusRef.current === 'assistant_speaking') return;
+
+      const input = audioEvent.inputBuffer.getChannelData(0);
+      let energy = 0;
+      for (let i = 0; i < input.length; i += 1) {
+        energy += input[i] * input[i];
+      }
+      const rms = Math.sqrt(energy / input.length);
+      const now = Date.now();
+      const isSpeech = rms >= LIVE_SPEECH_THRESHOLD;
+
+      if (isSpeech) {
+        liveUserSpeakingRef.current = true;
+        liveLastSpeechAtRef.current = now;
+        liveActivityEndSentRef.current = false;
+
+        const pcm16 = floatToPcm16(input);
+        socket.send(JSON.stringify({
+          event: 'audio_input_chunk',
+          mime_type: 'audio/pcm;rate=16000',
+          audio_base64: bytesToBase64(pcm16),
+        }));
+        return;
+      }
+
+      if (
+        liveUserSpeakingRef.current &&
+        now - liveLastSpeechAtRef.current >= LIVE_SILENCE_TIMEOUT_MS
+      ) {
+        sendLiveActivityEnd(socket);
+      }
     };
 
     liveAudioContextRef.current = inputContext;
     liveAudioSourceRef.current = source;
     liveAudioNodeRef.current = processor;
+  };
+
+  const LIVE_SPEECH_THRESHOLD = 0.018;
+  const LIVE_SILENCE_TIMEOUT_MS = 800;
+
+  const sendLiveActivityEnd = (socket: WebSocket, force = false) => {
+    if (socket.readyState !== WebSocket.OPEN) return;
+    if (!force && liveActivityEndSentRef.current) return;
+
+    socket.send(JSON.stringify({ event: 'activity_end' }));
+    liveActivityEndSentRef.current = true;
+    liveUserSpeakingRef.current = false;
   };
 
   const handleLiveConnectionError = (message: string) => {
@@ -800,6 +843,10 @@ export default function AssistantPage() {
   };
 
   const handleAssistantSpeakingStart = () => {
+    const socket = liveConnectionRef.current?.socket;
+    if (socket) {
+      sendLiveActivityEnd(socket, true);
+    }
     setLiveModeStatus('assistant_speaking');
   };
 
@@ -863,6 +910,9 @@ export default function AssistantPage() {
       ws.onopen = () => {
         setLiveModeStatus('connected');
         liveIsClosingRef.current = false;
+        liveUserSpeakingRef.current = false;
+        liveLastSpeechAtRef.current = 0;
+        liveActivityEndSentRef.current = true;
         startLiveMicStreaming(liveStreamRef.current as MediaStream, ws);
       };
 
