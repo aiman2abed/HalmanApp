@@ -92,6 +92,7 @@ interface AnalyzerResponse {
 interface LiveSessionConnection {
   sessionId: string;
   socket: WebSocket;
+  heartbeatId: number | null;
 }
 
 interface LiveWsEventPayload {
@@ -337,6 +338,7 @@ export default function AssistantPage() {
   const liveOutputPendingRef = useRef(0);
   const liveIsClosingRef = useRef(false);
   const liveModeStatusRef = useRef<LiveModeStatus>('idle');
+  const liveShouldStreamInputRef = useRef(false);
 
   const analyzerRecorderRef = useRef<MediaRecorder | null>(null);
   const analyzerStreamRef = useRef<MediaStream | null>(null);
@@ -368,6 +370,9 @@ export default function AssistantPage() {
   useEffect(() => {
     return () => {
       audioStreamRef.current?.getTracks().forEach((track) => track.stop());
+      if (liveConnectionRef.current?.heartbeatId) {
+        window.clearInterval(liveConnectionRef.current.heartbeatId);
+      }
       liveConnectionRef.current?.socket.close();
       liveConnectionRef.current = null;
       liveAudioNodeRef.current?.disconnect();
@@ -714,6 +719,7 @@ export default function AssistantPage() {
     }
     liveOutputNextTimeRef.current = 0;
     liveOutputPendingRef.current = 0;
+    liveShouldStreamInputRef.current = false;
   };
 
   const queueAssistantAudioChunk = (audioBase64: string, mimeType?: string) => {
@@ -779,7 +785,14 @@ export default function AssistantPage() {
 
     processor.onaudioprocess = (audioEvent) => {
       if (socket.readyState !== WebSocket.OPEN) return;
+      if (!liveShouldStreamInputRef.current) return;
       const pcm16 = floatToPcm16(audioEvent.inputBuffer.getChannelData(0));
+      let energy = 0;
+      for (let i = 0; i < pcm16.length; i += 1) {
+        energy += Math.abs(pcm16[i]);
+      }
+      const avgEnergy = energy / pcm16.length;
+      if (avgEnergy < 140) return;
       socket.send(JSON.stringify({
         event: 'audio_input_chunk',
         mime_type: 'audio/pcm;rate=16000',
@@ -795,15 +808,21 @@ export default function AssistantPage() {
   const handleLiveConnectionError = (message: string) => {
     setLiveModeError(message);
     setLiveModeStatus('error');
+    liveShouldStreamInputRef.current = false;
+    if (liveConnectionRef.current?.heartbeatId) {
+      window.clearInterval(liveConnectionRef.current.heartbeatId);
+    }
     liveConnectionRef.current?.socket.close();
     liveConnectionRef.current = null;
   };
 
   const handleAssistantSpeakingStart = () => {
+    liveShouldStreamInputRef.current = false;
     setLiveModeStatus('assistant_speaking');
   };
 
   const handleAssistantSpeakingStop = () => {
+    liveShouldStreamInputRef.current = true;
     setLiveModeStatus('listening');
   };
 
@@ -840,7 +859,7 @@ export default function AssistantPage() {
   };
 
   const startLiveSession = async () => {
-    if (liveModeStatus === 'connecting' || liveModeStatus === 'connected') return;
+    if (liveModeStatus === 'connecting' || liveModeStatus === 'connected' || liveModeStatus === 'listening' || liveModeStatus === 'assistant_speaking') return;
 
     if (!liveStreamRef.current) {
       await requestLivePermissions();
@@ -863,6 +882,7 @@ export default function AssistantPage() {
       ws.onopen = () => {
         setLiveModeStatus('connected');
         liveIsClosingRef.current = false;
+        liveShouldStreamInputRef.current = true;
         startLiveMicStreaming(liveStreamRef.current as MediaStream, ws);
       };
 
@@ -876,10 +896,12 @@ export default function AssistantPage() {
           } else if (payload.event === 'audio_output_chunk' && payload.audio_base64) {
             queueAssistantAudioChunk(payload.audio_base64, payload.mime_type);
           } else if (payload.event === 'session_ready' || payload.event === 'pong') {
+            liveShouldStreamInputRef.current = true;
             setLiveModeStatus('listening');
           } else if (payload.event === 'live_error') {
             handleLiveConnectionError(payload.message || 'حدث خطأ في الجلسة المباشرة.');
           } else if (payload.event === 'session_closed') {
+            liveShouldStreamInputRef.current = false;
             setLiveModeStatus('disconnected');
           }
         } catch {
@@ -892,6 +914,10 @@ export default function AssistantPage() {
       };
 
       ws.onclose = () => {
+        liveShouldStreamInputRef.current = false;
+        if (liveConnectionRef.current?.heartbeatId) {
+          window.clearInterval(liveConnectionRef.current.heartbeatId);
+        }
         stopLiveAudioPipeline();
         if (liveModeStatusRef.current !== 'idle' && liveModeStatusRef.current !== 'error') {
           setLiveModeStatus('disconnected');
@@ -899,7 +925,13 @@ export default function AssistantPage() {
         }
       };
 
-      liveConnectionRef.current = { sessionId: session.session_id, socket: ws };
+      const heartbeatId = window.setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ event: 'ping' }));
+        }
+      }, 15000);
+
+      liveConnectionRef.current = { sessionId: session.session_id, socket: ws, heartbeatId };
     } catch (error) {
       console.error('Live session start error:', error);
       handleLiveConnectionError('تعذر بدء الجلسة المباشرة حالياً. يمكنك المتابعة عبر الدردشة أو إعادة المحاولة.');
@@ -908,6 +940,10 @@ export default function AssistantPage() {
 
   const stopLiveSession = () => {
     liveIsClosingRef.current = true;
+    liveShouldStreamInputRef.current = false;
+    if (liveConnectionRef.current?.heartbeatId) {
+      window.clearInterval(liveConnectionRef.current.heartbeatId);
+    }
     if (liveConnectionRef.current?.socket.readyState === WebSocket.OPEN) {
       liveConnectionRef.current.socket.send(JSON.stringify({ event: 'disconnect' }));
     }
@@ -920,6 +956,9 @@ export default function AssistantPage() {
   };
 
   const reconnectLiveSession = async () => {
+    if (liveConnectionRef.current?.heartbeatId) {
+      window.clearInterval(liveConnectionRef.current.heartbeatId);
+    }
     liveConnectionRef.current?.socket.close();
     liveConnectionRef.current = null;
     if (!liveStreamRef.current) {
