@@ -756,6 +756,8 @@ async def live_session_websocket(session_id: str, websocket: WebSocket):
             "response_modalities": ["AUDIO"],
             "input_audio_transcription": {},
             "output_audio_transcription": {},
+            # Explicit VAD signal mode for manual activity_start/activity_end boundaries.
+            "explicit_vad_signal": True,
             "realtime_input_config": {
                 "automatic_activity_detection": {
                     "disabled": True,
@@ -801,6 +803,20 @@ async def live_session_websocket(session_id: str, websocket: WebSocket):
                     )
                     continue
 
+                if event == "activity_start":
+                    try:
+                        activity_start_payload = types.ActivityStart() if hasattr(types, "ActivityStart") else {}
+                        await gemini_live_session.send_realtime_input(activity_start=activity_start_payload)
+                    except Exception as activity_error:
+                        await websocket.send_json({"event": "live_error", "message": f"activity_start failed: {str(activity_error)}"})
+                    continue
+
+                if event == "activity_end":
+                    try:
+                        activity_end_payload = types.ActivityEnd() if hasattr(types, "ActivityEnd") else {}
+                        await gemini_live_session.send_realtime_input(activity_end=activity_end_payload)
+                    except Exception as activity_error:
+                        await websocket.send_json({"event": "live_error", "message": f"activity_end failed: {str(activity_error)}"})
                 if event == "activity_end":
                     await gemini_live_session.send_realtime_input(activity_end=True)
                     continue
