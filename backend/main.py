@@ -4,6 +4,7 @@ import json
 import uuid
 import base64
 import asyncio
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Literal, Optional
 
@@ -30,6 +31,9 @@ if GEMINI_API_KEY:
 
 app = FastAPI(title="HalmanApp API", version="1.3.0")
 
+if not logging.getLogger().handlers:
+    logging.basicConfig(level=logging.INFO)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],
@@ -43,6 +47,7 @@ LIVE_MODEL = os.getenv("GEMINI_LIVE_MODEL", "gemini-3.1-flash-live-preview")
 MAX_RECENT_HISTORY = 8
 LIVE_SESSION_TTL_MINUTES = 30
 live_sessions: Dict[str, datetime] = {}
+logger = logging.getLogger("halman.live")
 
 
 # ==========================================
@@ -680,6 +685,7 @@ def create_live_session():
     require_gemini_client()
     prune_expired_live_sessions()
     session_id = create_live_session_context()
+    logger.info("Created live session bootstrap: %s", session_id)
     return LiveSessionResponse(
         status="ready_for_transport",
         session_id=session_id,
@@ -689,9 +695,19 @@ def create_live_session():
     )
 
 
+def _to_audio_b64(raw_data: Any) -> Optional[str]:
+    if raw_data is None:
+        return None
+    if isinstance(raw_data, str):
+        return raw_data
+    if isinstance(raw_data, (bytes, bytearray, memoryview)):
+        return base64.b64encode(bytes(raw_data)).decode("utf-8")
+    return None
+
+
 async def relay_live_responses(gemini_session: Any, browser_ws: WebSocket):
     assistant_speaking = False
-    last_output_text = ""
+    pending_assistant_text = ""
 
     async for response in gemini_session.receive():
         server_content = getattr(response, "server_content", None)
@@ -699,17 +715,16 @@ async def relay_live_responses(gemini_session: Any, browser_ws: WebSocket):
             continue
 
         model_turn = getattr(server_content, "model_turn", None)
-        if model_turn and getattr(model_turn, "parts", None):
-            for part in model_turn.parts:
+        parts = getattr(model_turn, "parts", None) if model_turn else None
+        if parts:
+            for part in parts:
                 inline_data = getattr(part, "inline_data", None)
-                if not inline_data or not getattr(inline_data, "data", None):
+                if not inline_data:
                     continue
 
-                audio_bytes = inline_data.data
-                if isinstance(audio_bytes, str):
-                    audio_b64 = audio_bytes
-                else:
-                    audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
+                audio_b64 = _to_audio_b64(getattr(inline_data, "data", None))
+                if not audio_b64:
+                    continue
 
                 if not assistant_speaking:
                     assistant_speaking = True
@@ -724,18 +739,24 @@ async def relay_live_responses(gemini_session: Any, browser_ws: WebSocket):
                 )
 
         input_tx = getattr(server_content, "input_transcription", None)
-        if input_tx and getattr(input_tx, "text", None):
-            await browser_ws.send_json({"event": "transcript_delta", "source": "user", "text": input_tx.text})
+        input_text = clean_text(getattr(input_tx, "text", ""))
+        if input_text:
+            await browser_ws.send_json({"event": "transcript_delta", "source": "user", "text": input_text})
 
         output_tx = getattr(server_content, "output_transcription", None)
-        if output_tx and getattr(output_tx, "text", None):
-            last_output_text = output_tx.text
-            await browser_ws.send_json({"event": "transcript_delta", "source": "assistant", "text": output_tx.text})
+        output_text = clean_text(getattr(output_tx, "text", ""))
+        if output_text:
+            pending_assistant_text = output_text
+            await browser_ws.send_json({"event": "transcript_delta", "source": "assistant", "text": output_text})
 
-        if getattr(server_content, "turn_complete", False):
-            if last_output_text:
-                await browser_ws.send_json({"event": "transcript_final", "source": "assistant", "text": last_output_text})
-                last_output_text = ""
+        turn_complete = bool(getattr(server_content, "turn_complete", False))
+        interrupted = bool(getattr(server_content, "interrupted", False))
+        if turn_complete or interrupted:
+            if pending_assistant_text:
+                await browser_ws.send_json(
+                    {"event": "transcript_final", "source": "assistant", "text": pending_assistant_text}
+                )
+                pending_assistant_text = ""
             if assistant_speaking:
                 assistant_speaking = False
                 await browser_ws.send_json({"event": "assistant_speaking_stop"})
@@ -751,6 +772,7 @@ async def live_session_websocket(session_id: str, websocket: WebSocket):
 
     require_gemini_client()
     live_receive_task: Optional[asyncio.Task] = None
+    logger.info("Browser connected to live websocket for session: %s", session_id)
     try:
         live_config = {
             "response_modalities": ["AUDIO"],
@@ -767,6 +789,7 @@ async def live_session_websocket(session_id: str, websocket: WebSocket):
                 ).model_dump()
             )
             await websocket.send_json({"event": "session_ready", "session_id": session_id})
+            logger.info("Gemini live bridge established for session: %s", session_id)
 
             live_receive_task = asyncio.create_task(relay_live_responses(gemini_live_session, websocket))
 
@@ -779,6 +802,7 @@ async def live_session_websocket(session_id: str, websocket: WebSocket):
                     continue
 
                 if event == "disconnect":
+                    logger.info("Live session %s requested graceful disconnect", session_id)
                     break
 
                 if event == "audio_input_chunk":
@@ -799,13 +823,22 @@ async def live_session_websocket(session_id: str, websocket: WebSocket):
                 if event == "text_input":
                     text = str(payload.get("text", "")).strip()
                     if text:
-                        await gemini_live_session.send_realtime_input(text=text)
+                        await gemini_live_session.send_client_content(
+                            turns=[
+                                types.Content(
+                                    role="user",
+                                    parts=[types.Part(text=text)],
+                                )
+                            ],
+                            turn_complete=True,
+                        )
                     continue
 
                 await websocket.send_json({"event": "live_error", "message": f"Unsupported live event: {event}"})
     except WebSocketDisconnect:
-        pass
+        logger.info("Browser websocket disconnected for session: %s", session_id)
     except Exception as e:
+        logger.exception("Gemini live bridge error for session %s: %s", session_id, str(e))
         try:
             await websocket.send_json({"event": "live_error", "message": f"Gemini Live bridge error: {str(e)}"})
         except Exception:
@@ -820,6 +853,7 @@ async def live_session_websocket(session_id: str, websocket: WebSocket):
             except Exception:
                 pass
         pop_live_session_context(session_id)
+        logger.info("Live session cleaned up: %s", session_id)
         try:
             await websocket.send_json({"event": "session_closed", "session_id": session_id})
         except Exception:
