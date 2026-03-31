@@ -337,9 +337,6 @@ export default function AssistantPage() {
   const liveOutputPendingRef = useRef(0);
   const liveIsClosingRef = useRef(false);
   const liveModeStatusRef = useRef<LiveModeStatus>('idle');
-  const liveUserSpeakingRef = useRef(false);
-  const liveLastSpeechAtRef = useRef(0);
-  const liveActivityEndSentRef = useRef(true);
 
   const analyzerRecorderRef = useRef<MediaRecorder | null>(null);
   const analyzerStreamRef = useRef<MediaStream | null>(null);
@@ -717,9 +714,6 @@ export default function AssistantPage() {
     }
     liveOutputNextTimeRef.current = 0;
     liveOutputPendingRef.current = 0;
-    liveUserSpeakingRef.current = false;
-    liveLastSpeechAtRef.current = 0;
-    liveActivityEndSentRef.current = true;
   };
 
   const queueAssistantAudioChunk = (audioBase64: string, mimeType?: string) => {
@@ -793,33 +787,15 @@ export default function AssistantPage() {
         energy += input[i] * input[i];
       }
       const rms = Math.sqrt(energy / input.length);
-      const now = Date.now();
       const isSpeech = rms >= LIVE_SPEECH_THRESHOLD;
+      if (!isSpeech) return;
 
-      if (isSpeech) {
-        if (!liveUserSpeakingRef.current || liveActivityEndSentRef.current) {
-          sendLiveActivityStart(socket);
-        }
-
-        liveUserSpeakingRef.current = true;
-        liveLastSpeechAtRef.current = now;
-        liveActivityEndSentRef.current = false;
-
-        const pcm16 = floatToPcm16(input);
-        socket.send(JSON.stringify({
-          event: 'audio_input_chunk',
-          mime_type: 'audio/pcm;rate=16000',
-          audio_base64: bytesToBase64(pcm16),
-        }));
-        return;
-      }
-
-      if (
-        liveUserSpeakingRef.current &&
-        now - liveLastSpeechAtRef.current >= LIVE_SILENCE_TIMEOUT_MS
-      ) {
-        sendLiveActivityEnd(socket);
-      }
+      const pcm16 = floatToPcm16(input);
+      socket.send(JSON.stringify({
+        event: 'audio_input_chunk',
+        mime_type: 'audio/pcm;rate=16000',
+        audio_base64: bytesToBase64(pcm16),
+      }));
     };
 
     liveAudioContextRef.current = inputContext;
@@ -828,21 +804,6 @@ export default function AssistantPage() {
   };
 
   const LIVE_SPEECH_THRESHOLD = 0.018;
-  const LIVE_SILENCE_TIMEOUT_MS = 800;
-
-  const sendLiveActivityStart = (socket: WebSocket) => {
-    if (socket.readyState !== WebSocket.OPEN) return;
-    socket.send(JSON.stringify({ event: 'activity_start' }));
-  };
-
-  const sendLiveActivityEnd = (socket: WebSocket, force = false) => {
-    if (socket.readyState !== WebSocket.OPEN) return;
-    if (!force && liveActivityEndSentRef.current) return;
-
-    socket.send(JSON.stringify({ event: 'activity_end' }));
-    liveActivityEndSentRef.current = true;
-    liveUserSpeakingRef.current = false;
-  };
 
   const handleLiveConnectionError = (message: string) => {
     setLiveModeError(message);
@@ -852,10 +813,6 @@ export default function AssistantPage() {
   };
 
   const handleAssistantSpeakingStart = () => {
-    const socket = liveConnectionRef.current?.socket;
-    if (socket) {
-      sendLiveActivityEnd(socket, true);
-    }
     setLiveModeStatus('assistant_speaking');
   };
 
@@ -896,7 +853,12 @@ export default function AssistantPage() {
   };
 
   const startLiveSession = async () => {
-    if (liveModeStatus === 'connecting' || liveModeStatus === 'connected') return;
+    if (
+      liveModeStatus === 'connecting' ||
+      liveModeStatus === 'connected' ||
+      liveModeStatus === 'listening' ||
+      liveModeStatus === 'assistant_speaking'
+    ) return;
 
     if (!liveStreamRef.current) {
       await requestLivePermissions();
@@ -919,9 +881,6 @@ export default function AssistantPage() {
       ws.onopen = () => {
         setLiveModeStatus('connected');
         liveIsClosingRef.current = false;
-        liveUserSpeakingRef.current = false;
-        liveLastSpeechAtRef.current = 0;
-        liveActivityEndSentRef.current = true;
         startLiveMicStreaming(liveStreamRef.current as MediaStream, ws);
       };
 

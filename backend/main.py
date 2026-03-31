@@ -4,6 +4,7 @@ import json
 import uuid
 import base64
 import asyncio
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Literal, Optional
 
@@ -27,6 +28,8 @@ GEMINI_API_KEY = raw_key.replace('"', "").replace("'", "").strip()
 client = None
 if GEMINI_API_KEY:
     client = genai.Client(api_key=GEMINI_API_KEY)
+
+logger = logging.getLogger("halman.live")
 
 app = FastAPI(title="HalmanApp API", version="1.3.0")
 
@@ -692,53 +695,58 @@ def create_live_session():
 async def relay_live_responses(gemini_session: Any, browser_ws: WebSocket):
     assistant_speaking = False
     last_output_text = ""
+    try:
+        async for response in gemini_session.receive():
+            server_content = getattr(response, "server_content", None)
+            if not server_content:
+                continue
 
-    async for response in gemini_session.receive():
-        server_content = getattr(response, "server_content", None)
-        if not server_content:
-            continue
+            model_turn = getattr(server_content, "model_turn", None)
+            if model_turn and getattr(model_turn, "parts", None):
+                for part in model_turn.parts:
+                    inline_data = getattr(part, "inline_data", None)
+                    if not inline_data or not getattr(inline_data, "data", None):
+                        continue
 
-        model_turn = getattr(server_content, "model_turn", None)
-        if model_turn and getattr(model_turn, "parts", None):
-            for part in model_turn.parts:
-                inline_data = getattr(part, "inline_data", None)
-                if not inline_data or not getattr(inline_data, "data", None):
-                    continue
+                    audio_bytes = inline_data.data
+                    if isinstance(audio_bytes, str):
+                        audio_b64 = audio_bytes
+                    else:
+                        audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
 
-                audio_bytes = inline_data.data
-                if isinstance(audio_bytes, str):
-                    audio_b64 = audio_bytes
-                else:
-                    audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
+                    if not assistant_speaking:
+                        assistant_speaking = True
+                        await browser_ws.send_json({"event": "assistant_speaking_start"})
 
-                if not assistant_speaking:
-                    assistant_speaking = True
-                    await browser_ws.send_json({"event": "assistant_speaking_start"})
+                    await browser_ws.send_json(
+                        {
+                            "event": "audio_output_chunk",
+                            "audio_base64": audio_b64,
+                            "mime_type": getattr(inline_data, "mime_type", "audio/pcm;rate=24000"),
+                        }
+                    )
 
-                await browser_ws.send_json(
-                    {
-                        "event": "audio_output_chunk",
-                        "audio_base64": audio_b64,
-                        "mime_type": getattr(inline_data, "mime_type", "audio/pcm;rate=24000"),
-                    }
-                )
+            input_tx = getattr(server_content, "input_transcription", None)
+            if input_tx and getattr(input_tx, "text", None):
+                await browser_ws.send_json({"event": "transcript_delta", "source": "user", "text": input_tx.text})
 
-        input_tx = getattr(server_content, "input_transcription", None)
-        if input_tx and getattr(input_tx, "text", None):
-            await browser_ws.send_json({"event": "transcript_delta", "source": "user", "text": input_tx.text})
+            output_tx = getattr(server_content, "output_transcription", None)
+            if output_tx and getattr(output_tx, "text", None):
+                last_output_text = output_tx.text
+                await browser_ws.send_json({"event": "transcript_delta", "source": "assistant", "text": output_tx.text})
 
-        output_tx = getattr(server_content, "output_transcription", None)
-        if output_tx and getattr(output_tx, "text", None):
-            last_output_text = output_tx.text
-            await browser_ws.send_json({"event": "transcript_delta", "source": "assistant", "text": output_tx.text})
-
-        if getattr(server_content, "turn_complete", False):
-            if last_output_text:
-                await browser_ws.send_json({"event": "transcript_final", "source": "assistant", "text": last_output_text})
-                last_output_text = ""
-            if assistant_speaking:
-                assistant_speaking = False
-                await browser_ws.send_json({"event": "assistant_speaking_stop"})
+            if getattr(server_content, "turn_complete", False):
+                if last_output_text:
+                    await browser_ws.send_json({"event": "transcript_final", "source": "assistant", "text": last_output_text})
+                    last_output_text = ""
+                if assistant_speaking:
+                    assistant_speaking = False
+                    await browser_ws.send_json({"event": "assistant_speaking_stop"})
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception("Gemini Live relay failed.")
+        raise
 
 
 @app.websocket("/api/live/ws/{session_id}")
@@ -752,17 +760,11 @@ async def live_session_websocket(session_id: str, websocket: WebSocket):
     require_gemini_client()
     live_receive_task: Optional[asyncio.Task] = None
     try:
+        # Use Gemini Live automatic turn handling as the only authority for voice turns.
         live_config = {
             "response_modalities": ["AUDIO"],
             "input_audio_transcription": {},
             "output_audio_transcription": {},
-            # Explicit VAD signal mode for manual activity_start/activity_end boundaries.
-            "explicit_vad_signal": True,
-            "realtime_input_config": {
-                "automatic_activity_detection": {
-                    "disabled": True,
-                }
-            },
         }
 
         async with client.aio.live.connect(model=LIVE_MODEL, config=live_config) as gemini_live_session:
@@ -803,22 +805,8 @@ async def live_session_websocket(session_id: str, websocket: WebSocket):
                     )
                     continue
 
-                if event == "activity_start":
-                    try:
-                        activity_start_payload = types.ActivityStart() if hasattr(types, "ActivityStart") else {}
-                        await gemini_live_session.send_realtime_input(activity_start=activity_start_payload)
-                    except Exception as activity_error:
-                        await websocket.send_json({"event": "live_error", "message": f"activity_start failed: {str(activity_error)}"})
-                    continue
-
-                if event == "activity_end":
-                    try:
-                        activity_end_payload = types.ActivityEnd() if hasattr(types, "ActivityEnd") else {}
-                        await gemini_live_session.send_realtime_input(activity_end=activity_end_payload)
-                    except Exception as activity_error:
-                        await websocket.send_json({"event": "live_error", "message": f"activity_end failed: {str(activity_error)}"})
-                if event == "activity_end":
-                    await gemini_live_session.send_realtime_input(activity_end=True)
+                if event in {"activity_start", "activity_end"}:
+                    logger.info("Ignoring legacy live event '%s' for session %s.", event, session_id)
                     continue
 
                 if event == "text_input":
@@ -827,10 +815,11 @@ async def live_session_websocket(session_id: str, websocket: WebSocket):
                         await gemini_live_session.send_realtime_input(text=text)
                     continue
 
-                await websocket.send_json({"event": "live_error", "message": f"Unsupported live event: {event}"})
-    except WebSocketDisconnect:
-        pass
+                logger.debug("Ignoring unsupported live event '%s' for session %s.", event, session_id)
+    except WebSocketDisconnect as ws_disconnect:
+        logger.info("Browser WebSocket disconnected for live session %s: %s", session_id, ws_disconnect)
     except Exception as e:
+        logger.exception("Gemini Live bridge error for session %s.", session_id)
         try:
             await websocket.send_json({"event": "live_error", "message": f"Gemini Live bridge error: {str(e)}"})
         except Exception:
