@@ -756,6 +756,11 @@ async def live_session_websocket(session_id: str, websocket: WebSocket):
             "response_modalities": ["AUDIO"],
             "input_audio_transcription": {},
             "output_audio_transcription": {},
+            "realtime_input_config": {
+                "automatic_activity_detection": {
+                    "disabled": True,
+                }
+            },
         }
 
         async with client.aio.live.connect(model=LIVE_MODEL, config=live_config) as gemini_live_session:
