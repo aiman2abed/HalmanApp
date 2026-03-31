@@ -756,6 +756,11 @@ async def live_session_websocket(session_id: str, websocket: WebSocket):
             "response_modalities": ["AUDIO"],
             "input_audio_transcription": {},
             "output_audio_transcription": {},
+            "realtime_input_config": {
+                "automatic_activity_detection": {
+                    "disabled": True,
+                }
+            },
         }
 
         async with client.aio.live.connect(model=LIVE_MODEL, config=live_config) as gemini_live_session:
@@ -794,6 +799,14 @@ async def live_session_websocket(session_id: str, websocket: WebSocket):
                     await gemini_live_session.send_realtime_input(
                         audio=types.Blob(data=chunk, mime_type=mime_type)
                     )
+                    continue
+
+                if event == "activity_start":
+                    await gemini_live_session.send_realtime_input(activity_start=types.ActivityStart())
+                    continue
+
+                if event == "activity_end":
+                    await gemini_live_session.send_realtime_input(activity_end=types.ActivityEnd())
                     continue
 
                 if event == "text_input":
