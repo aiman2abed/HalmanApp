@@ -758,6 +758,11 @@ async def live_session_websocket(session_id: str, websocket: WebSocket):
             "output_audio_transcription": {},
             # Explicit VAD signal mode for manual activity_start/activity_end boundaries.
             "explicit_vad_signal": True,
+            "realtime_input_config": {
+                "automatic_activity_detection": {
+                    "disabled": True,
+                }
+            },
         }
 
         async with client.aio.live.connect(model=LIVE_MODEL, config=live_config) as gemini_live_session:
@@ -812,6 +817,8 @@ async def live_session_websocket(session_id: str, websocket: WebSocket):
                         await gemini_live_session.send_realtime_input(activity_end=activity_end_payload)
                     except Exception as activity_error:
                         await websocket.send_json({"event": "live_error", "message": f"activity_end failed: {str(activity_error)}"})
+                if event == "activity_end":
+                    await gemini_live_session.send_realtime_input(activity_end=True)
                     continue
 
                 if event == "text_input":
