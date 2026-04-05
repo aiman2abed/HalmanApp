@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Noto_Kufi_Arabic } from "next/font/google";
 import Navigation from "@/components/Navigation";
 import { AuthProvider } from "@/contexts/AuthContext";
@@ -9,9 +9,23 @@ const notoKufi = Noto_Kufi_Arabic({
   weight: ["400", "700", "900"],
 });
 
+// إعدادات ألوان التطبيق في شريط إشعارات الهاتف وخصائص العرض
+export const viewport: Viewport = {
+  themeColor: "#f97316", // لون برتقالي ليتناسب مع هوية حلمان
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1, // لمنع التقريب العشوائي عند النقر المزدوج في الهواتف
+};
+
 export const metadata: Metadata = {
-  title: "HalmanApp - طريق المستقبل",
-  description: "Gamified Educational Campus",
+  title: "Halman",
+  description: "منصة حلمان التعليمية والتفاعلية",
+  manifest: "/manifest.json", // سيتم توليده تلقائياً من ملف manifest.ts الذي أنشأناه
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "default",
+    title: "Halman",
+  },
 };
 
 /**
