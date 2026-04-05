@@ -24,7 +24,7 @@ import confetti from "canvas-confetti";
 interface AssessmentResult {
   dominant_trait: string;
   ai_insight: string;
-  raw_scores: scores as any;
+  raw_scores: any;
 }
 
 export default function AssessmentPage() {
@@ -146,7 +146,7 @@ export default function AssessmentPage() {
       setAiResult({
         dominant_trait: "Error",
         ai_insight: "عذراً، حدث خطأ في تحليل قوتك الخارقة. حاول مرة أخرى!",
-        raw_scores: scores,
+        raw_scores: scores as any,
       });
     } finally {
       setIsAnalyzing(false);
