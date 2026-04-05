@@ -238,7 +238,7 @@ function LiveAvatar({ status }: { status: LiveModeStatus }) {
         : 'border-orange-200 shadow-[0_0_28px_rgba(249,115,22,0.22)]';
 
   return (
-    <div className="relative w-36 h-36 md:w-44 md:h-44 mx-auto">
+    <div className="relative w-36 h-36 mx-auto md:h-44 md:w-44">
       <motion.div
         animate={{
           scale: isSpeaking ? [1, 1.08, 1] : isListening ? [1, 1.04, 1] : [1, 1.02, 1],
@@ -254,7 +254,7 @@ function LiveAvatar({ status }: { status: LiveModeStatus }) {
           isDisconnected ? 'bg-slate-200/40' : isSpeaking ? 'bg-orange-300/30' : 'bg-sky-300/25'
         }`}
       />
-      <div className="relative w-full h-full rounded-full overflow-hidden border-4 border-white shadow-xl bg-orange-100">
+      <div className="relative h-full w-full overflow-hidden rounded-full border-4 border-white bg-orange-100 shadow-xl">
         <Image
           src="/assets/halman-avatar.png"
           alt="حلمان أفندي"
@@ -1065,27 +1065,66 @@ export default function AssistantPage() {
   }, [liveModeStatus]);
 
   return (
-    <div className="p-3 md:p-6 max-w-7xl mx-auto h-full flex flex-col gap-5">
-      <div className="px-1 md:px-2">
-        <div className="inline-flex items-center gap-3 bg-white/80 backdrop-blur rounded-2xl px-4 py-3 border border-orange-100 shadow-sm">
-          <div className="bg-orange-100 p-2 rounded-xl border border-orange-200 shadow-sm">
+    // Mobile First: Use 100dvh and safe area padding (pb-24) for the bottom nav
+    <div className="mx-auto flex h-[100dvh] w-full max-w-7xl flex-col gap-3 p-3 pb-24 md:gap-5 md:p-6 md:pb-6" dir="rtl">
+      
+      {/* Mobile-Friendly Header with Embedded Mode Switcher */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 px-1 md:px-2">
+        <div className="inline-flex items-center gap-3 rounded-2xl border border-orange-100 bg-white/80 px-4 py-3 shadow-sm backdrop-blur">
+          <div className="rounded-xl border border-orange-200 bg-orange-100 p-2 shadow-sm">
+            <Sparkles className="h-5 w-5 text-orange-500" />
           </div>
           <div>
-            <h1 className="text-2xl md:text-3xl font-black bg-gradient-to-r from-orange-500 to-pink-600 bg-clip-text text-transparent">
+            <h1 className="bg-gradient-to-r from-orange-500 to-pink-600 bg-clip-text text-xl font-black text-transparent md:text-3xl">
               مساحة المساعدة
             </h1>
-            <p className="text-slate-500 text-sm font-medium mt-1">
+            <p className="mt-1 hidden text-sm font-medium text-slate-500 md:block">
               تحدث، اسأل، وتعلّم مع حلمان أفندي بطريقة مرتبة وواضحة
             </p>
           </div>
         </div>
+
+        {/* Mode Switcher - Extracted to the top so it's always accessible on mobile */}
+        <div className="flex w-fit items-center gap-1 rounded-2xl border border-slate-200 bg-white/80 p-1.5 shadow-sm backdrop-blur sm:gap-2">
+          {([
+            { key: 'chat', label: 'دردشة', icon: Sparkles },
+            { key: 'live', label: 'مباشر', icon: Radio },
+            { key: 'analyzer', label: 'تحليل', icon: Brain },
+          ] as const).map((tab) => {
+            const Icon = tab.icon;
+            const active = workspaceMode === tab.key;
+            return (
+              <button
+                key={tab.key}
+                type="button"
+                onClick={() => setWorkspaceMode(tab.key)}
+                className={`flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-sm font-bold transition-all ${
+                  active
+                    ? 'border border-orange-100 bg-white text-orange-700 shadow-sm'
+                    : 'text-slate-500 hover:text-slate-700'
+                }`}
+              >
+                <Icon className="h-4 w-4" />
+                {tab.label}
+              </button>
+            );
+          })}
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-[1.2fr_0.8fr] gap-5 flex-1 min-h-0 pb-6">
-        <div className="bg-white rounded-[28px] shadow-lg border border-slate-100 flex flex-col min-h-[620px] overflow-hidden">
-          <div className="bg-gradient-to-r from-orange-50 to-pink-50 border-b border-orange-100 p-4 md:p-5 flex items-center gap-4 shadow-sm z-10">
-            <div className="relative w-14 h-14 rounded-full border-2 border-white shadow-md overflow-hidden bg-orange-200 flex-shrink-0">
-              <div className="absolute inset-0 flex items-center justify-center text-orange-500 font-black text-xs">
+      {/* Main Dual-Column Grid */}
+      <div className="flex min-h-0 flex-1 grid-cols-1 gap-4 xl:grid xl:grid-cols-[1.2fr_0.8fr] md:gap-5">
+        
+        {/* Left Column: Chat Container */}
+        {/* Mobile Logic: Only show when 'chat' is active. Desktop Logic: Always show (xl:flex) */}
+        <div
+          className={`flex-col overflow-hidden rounded-[24px] border border-slate-100 bg-white shadow-lg md:rounded-[28px] ${
+            workspaceMode !== 'chat' ? 'hidden xl:flex' : 'flex'
+          } h-full w-full`}
+        >
+          <div className="z-10 flex items-center gap-4 border-b border-orange-100 bg-gradient-to-r from-orange-50 to-pink-50 p-4 shadow-sm md:p-5">
+            <div className="relative h-14 w-14 shrink-0 overflow-hidden rounded-full border-2 border-white bg-orange-200 shadow-md">
+              <div className="absolute inset-0 flex items-center justify-center text-xs font-black text-orange-500">
                 حلمان
               </div>
               <Image
@@ -1101,21 +1140,21 @@ export default function AssistantPage() {
             </div>
 
             <div className="min-w-0">
-              <h2 className="font-black text-slate-800 text-lg">حلمان أفندي</h2>
-              <p className="text-sm text-slate-600 font-medium">
+              <h2 className="text-lg font-black text-slate-800">حلمان أفندي</h2>
+              <p className="text-sm font-medium text-slate-600 line-clamp-1">
                 مساعد ذكي يشرح، يرتّب الأفكار، ويدعمك خطوة بخطوة
               </p>
-              <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-500 mt-1">
+              <div className="mt-1 flex items-center gap-1.5 text-xs font-bold text-emerald-500">
                 <span className="relative flex h-2.5 w-2.5">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75"></span>
+                  <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-500"></span>
                 </span>
                 متصل الآن
               </div>
             </div>
           </div>
 
-          <div className="flex-1 p-4 md:p-5 overflow-y-auto space-y-4 bg-slate-50/70">
+          <div className="flex-1 space-y-4 overflow-y-auto bg-slate-50/70 p-4 md:p-5">
             <AnimatePresence>
               {messages.map((message) => (
                 <motion.div
@@ -1125,7 +1164,7 @@ export default function AssistantPage() {
                   className={`flex gap-3 ${message.sender === 'user' ? 'justify-end' : 'justify-start'}`}
                 >
                   {message.sender === 'bot' && (
-                    <div className="w-9 h-9 bg-orange-200 rounded-full flex items-center justify-center flex-shrink-0 shadow-sm border border-white overflow-hidden relative mt-1">
+                    <div className="relative mt-1 flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-full border border-white bg-orange-200 shadow-sm">
                       <Image
                         src="/assets/halman-avatar.png"
                         alt="Bot"
@@ -1142,8 +1181,8 @@ export default function AssistantPage() {
                   <div
                     className={`max-w-[88%] rounded-3xl shadow-sm ${
                       message.sender === 'user'
-                        ? 'bg-sky-500 text-white rounded-tl-md px-4 py-3'
-                        : 'bg-white border border-slate-100 text-slate-700 rounded-tr-md px-4 py-3.5'
+                        ? 'rounded-tl-md bg-sky-500 px-4 py-3 text-white'
+                        : 'rounded-tr-md border border-slate-100 bg-white px-4 py-3.5 text-slate-700'
                     }`}
                   >
                     <MessageContent
@@ -1152,7 +1191,7 @@ export default function AssistantPage() {
                       copiedCodeMap={copiedStateMap}
                     />
                     {message.sender === 'bot' && (
-                      <div className="mt-3 pt-2 border-t border-slate-100 flex flex-wrap items-center gap-2">
+                      <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-2">
                         <button
                           type="button"
                           onClick={() =>
@@ -1161,7 +1200,7 @@ export default function AssistantPage() {
                               buildPlainTextFromMessage(message)
                             )
                           }
-                          className="text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-1.5 rounded-lg transition-colors"
+                          className="rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-bold text-slate-700 transition-colors hover:bg-slate-200"
                         >
                           {copiedStateMap[`${message.id}-all`]
                             ? 'تم النسخ'
@@ -1171,7 +1210,7 @@ export default function AssistantPage() {
                           type="button"
                           disabled={isThinking}
                           onClick={() => handleRetry(message.id)}
-                          className="text-xs font-bold bg-orange-50 hover:bg-orange-100 text-orange-700 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                          className="rounded-lg bg-orange-50 px-3 py-1.5 text-xs font-bold text-orange-700 transition-colors hover:bg-orange-100 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           إعادة المحاولة
                         </button>
@@ -1186,21 +1225,21 @@ export default function AssistantPage() {
             <div ref={messagesEndRef} />
           </div>
 
-          <div className="p-3 md:p-4 bg-white border-t border-slate-100">
-            <div className="flex gap-2 items-center">
+          <div className="border-t border-slate-100 bg-white p-3 md:p-4">
+            <div className="flex items-center gap-2">
               <button
                 onClick={handleAudioRecordToggle}
-                className={`w-12 h-12 rounded-xl flex items-center justify-center transition-all shadow-md flex-shrink-0 ${
+                className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-xl shadow-md transition-all ${
                   voiceInputStatus === 'recording'
-                    ? 'bg-rose-500 text-white animate-pulse shadow-rose-200'
+                    ? 'animate-pulse bg-rose-500 text-white shadow-rose-200'
                     : 'bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-800'
                 }`}
                 disabled={isThinking || voiceInputStatus === 'transcribing' || voiceInputStatus === 'sending'}
               >
                 {voiceInputStatus === 'recording' ? (
-                  <StopCircle className="w-5 h-5" />
+                  <StopCircle className="h-5 w-5" />
                 ) : (
-                  <Mic className="w-5 h-5" />
+                  <Mic className="h-5 w-5" />
                 )}
               </button>
 
@@ -1211,14 +1250,14 @@ export default function AssistantPage() {
                 onKeyDown={(e) => e.key === 'Enter' && handleSend()}
                 placeholder="اكتب رسالة، سؤال، أو حتى كود..."
                 disabled={isThinking || voiceInputStatus !== 'idle'}
-                className="flex-1 bg-slate-50 px-4 py-3 rounded-xl border border-slate-200 focus:border-orange-400 focus:ring-2 focus:ring-orange-100 outline-none transition-all text-sm disabled:opacity-50"
+                className="flex-1 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none transition-all focus:border-orange-400 focus:ring-2 focus:ring-orange-100 disabled:opacity-50"
               />
 
               {voiceInputStatus === 'recording' && (
                 <button
                   type="button"
                   onClick={() => stopAudioRecording(true)}
-                  className="px-3 py-2 rounded-xl bg-slate-100 text-slate-700 text-xs font-bold hover:bg-slate-200 transition-colors"
+                  className="rounded-xl bg-slate-100 px-3 py-2 text-xs font-bold text-slate-700 transition-colors hover:bg-slate-200"
                 >
                   إلغاء
                 </button>
@@ -1227,51 +1266,31 @@ export default function AssistantPage() {
               <button
                 onClick={handleSend}
                 disabled={isThinking || voiceInputStatus !== 'idle' || !inputValue.trim()}
-                className="bg-orange-500 text-white w-12 h-12 rounded-xl flex items-center justify-center hover:bg-orange-600 active:scale-95 transition-all disabled:opacity-50 disabled:active:scale-100 shadow-md shadow-orange-200 flex-shrink-0"
+                className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-orange-500 text-white shadow-md shadow-orange-200 transition-all hover:bg-orange-600 active:scale-95 disabled:opacity-50 disabled:active:scale-100"
               >
-                <Send className="w-5 h-5 -ml-1" />
+                <Send className="-ml-1 h-5 w-5" />
               </button>
             </div>
           </div>
         </div>
 
-        <div className="bg-white rounded-[28px] shadow-lg border border-slate-100 p-4 md:p-6 flex flex-col min-h-[620px]">
-          <div className="mb-5">
-            <div className="flex items-center gap-2 bg-slate-50 rounded-2xl p-1 w-fit mb-4">
-              {([
-                { key: 'chat', label: 'دردشة', icon: Sparkles },
-                { key: 'live', label: 'مباشر', icon: Radio },
-                { key: 'analyzer', label: 'تحليل', icon: Brain },
-              ] as const).map((tab) => {
-                const Icon = tab.icon;
-                const active = workspaceMode === tab.key;
-                return (
-                  <button
-                    key={tab.key}
-                    type="button"
-                    onClick={() => setWorkspaceMode(tab.key)}
-                    className={`px-3.5 py-2 rounded-xl text-sm font-bold flex items-center gap-1.5 transition-all ${
-                      active
-                        ? 'bg-white text-orange-700 border border-orange-100 shadow-sm'
-                        : 'text-slate-500 hover:text-slate-700'
-                    }`}
-                  >
-                    <Icon className="w-4 h-4" />
-                    {tab.label}
-                  </button>
-                );
-              })}
-            </div>
-
-            <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2 mb-1">
-              <Video className="w-5 h-5 text-sky-500" />
+        {/* Right Column: Tools Container */}
+        {/* Mobile Logic: Only show when 'live' or 'analyzer' is active. Desktop Logic: Always show */}
+        <div
+          className={`flex-col h-full overflow-y-auto rounded-[24px] border border-slate-100 bg-white p-4 shadow-lg md:rounded-[28px] md:p-6 ${
+            workspaceMode === 'chat' ? 'hidden xl:flex' : 'flex'
+          } w-full`}
+        >
+          <div className="mb-5 hidden xl:block">
+            <h2 className="mb-1 flex items-center gap-2 text-lg font-bold text-slate-800">
+              <Video className="h-5 w-5 text-sky-500" />
               {workspaceMode === 'chat'
                 ? 'لوحة المساعدة'
                 : workspaceMode === 'live'
                   ? 'جلسة مباشرة'
                   : 'ورشة التحليل'}
             </h2>
-            <p className="text-sm text-slate-500 font-medium leading-6">
+            <p className="text-sm font-medium leading-6 text-slate-500">
               {workspaceMode === 'chat'
                 ? 'الدردشة والرسائل الصوتية تعمل كما هي. اختر مباشر أو تحليل من الأعلى عند الحاجة.'
                 : workspaceMode === 'live'
@@ -1281,85 +1300,84 @@ export default function AssistantPage() {
           </div>
 
           {workspaceMode === 'chat' && (
-            <div className="flex-1 rounded-3xl border border-dashed border-slate-200 bg-slate-50 flex items-center justify-center px-6 text-center">
+            <div className="flex flex-1 items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-slate-50 px-6 text-center">
               <div>
-                <Sparkles className="w-8 h-8 text-orange-500 mx-auto mb-2" />
+                <Sparkles className="mx-auto mb-2 h-8 w-8 text-orange-500" />
                 <p className="text-sm font-bold text-slate-700">أنت الآن في وضع الدردشة.</p>
-                <p className="text-xs text-slate-500 mt-1 leading-6">لو حابب جلسة كاميرا مباشرة أو تحليل فيديو/صوت، اختر الوضع المناسب من الأعلى.</p>
+                <p className="mt-1 text-xs leading-6 text-slate-500">لو حابب جلسة كاميرا مباشرة أو تحليل فيديو/صوت، اختر الوضع المناسب من الأعلى.</p>
               </div>
             </div>
           )}
 
           {workspaceMode === 'live' && (
-            <div className="flex-1 flex flex-col gap-4">
-              <div className="bg-slate-900 rounded-3xl flex-1 flex items-center justify-center relative overflow-hidden border-4 border-slate-800 min-h-[220px]">
+            <div className="flex flex-1 flex-col gap-4">
+              <div className="relative flex min-h-[220px] flex-1 items-center justify-center overflow-hidden rounded-3xl border-4 border-slate-800 bg-slate-900">
                 {liveStreamRef.current ? (
-                  <video ref={liveVideoRef} autoPlay muted playsInline className="w-full h-full object-cover" />
+                  <video ref={liveVideoRef} autoPlay muted playsInline className="h-full w-full object-cover" />
                 ) : (
-                  <div className="text-center text-slate-300 px-6">
-                    <Camera className="w-12 h-12 mx-auto mb-2 opacity-70" />
+                  <div className="px-6 text-center text-slate-300">
+                    <Camera className="mx-auto mb-2 h-12 w-12 opacity-70" />
                     <p className="text-sm font-semibold">لا يوجد بث كاميرا حالياً</p>
-                    <p className="text-xs opacity-80 mt-1">ابدأ الجلسة المباشرة لعرض المعاينة هنا.</p>
+                    <p className="mt-1 text-xs opacity-80">ابدأ الجلسة المباشرة لعرض المعاينة هنا.</p>
                   </div>
                 )}
               </div>
 
-              <div className="rounded-3xl border border-slate-100 p-4 bg-white">
+              <div className="rounded-3xl border border-slate-100 bg-white p-4">
                 <LiveAvatar status={liveModeStatus} />
                 <div className={`mt-4 rounded-2xl border p-3 ${liveStateToneClass}`}>
-                  <p className="text-xs font-bold mb-1">حالة الوضع المباشر:</p>
+                  <p className="mb-1 text-xs font-bold">حالة الوضع المباشر:</p>
                   <p className="text-sm font-semibold leading-7">{liveStatusLabel[liveModeStatus]}</p>
                 </div>
 
                 <div className="mt-3 grid grid-cols-2 gap-2 text-xs font-bold">
-                  <div className={`rounded-xl px-3 py-2 border ${liveMicActive ? 'bg-emerald-50 border-emerald-100 text-emerald-700' : 'bg-slate-50 border-slate-100 text-slate-500'}`}>
-                    <Mic className="w-4 h-4 inline-block ml-1" />
+                  <div className={`rounded-xl border px-3 py-2 ${liveMicActive ? 'border-emerald-100 bg-emerald-50 text-emerald-700' : 'border-slate-100 bg-slate-50 text-slate-500'}`}>
+                    <Mic className="ml-1 inline-block h-4 w-4" />
                     {liveMicActive ? 'الميكروفون يعمل' : 'الميكروفون غير متاح'}
                   </div>
-                  <div className={`rounded-xl px-3 py-2 border ${liveCameraActive ? 'bg-emerald-50 border-emerald-100 text-emerald-700' : 'bg-slate-50 border-slate-100 text-slate-500'}`}>
-                    <Video className="w-4 h-4 inline-block ml-1" />
+                  <div className={`rounded-xl border px-3 py-2 ${liveCameraActive ? 'border-emerald-100 bg-emerald-50 text-emerald-700' : 'border-slate-100 bg-slate-50 text-slate-500'}`}>
+                    <Video className="ml-1 inline-block h-4 w-4" />
                     {liveCameraActive ? 'الكاميرا تعمل' : 'الكاميرا غير متاحة'}
                   </div>
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                 <button
                   onClick={requestLivePermissions}
                   disabled={liveModeStatus === 'requesting_permissions' || liveModeStatus === 'connecting'}
-                  className="bg-slate-100 text-slate-700 font-bold py-2.5 rounded-xl hover:bg-slate-200 transition-all disabled:opacity-50"
+                  className="rounded-xl bg-slate-100 py-2.5 font-bold text-slate-700 transition-all hover:bg-slate-200 disabled:opacity-50"
                 >
                   تفعيل الأجهزة
                 </button>
                 <button
                   onClick={startLiveSession}
                   disabled={liveModeStatus === 'requesting_permissions' || liveModeStatus === 'connecting' || liveModeStatus === 'connected' || liveModeStatus === 'listening' || liveModeStatus === 'assistant_speaking'}
-                  className="bg-gradient-to-r from-sky-400 to-blue-500 text-white font-bold py-2.5 rounded-xl shadow-md shadow-blue-200 active:scale-95 transition-all disabled:opacity-50"
+                  className="rounded-xl bg-gradient-to-r from-sky-400 to-blue-500 py-2.5 font-bold text-white shadow-md shadow-blue-200 transition-all active:scale-95 disabled:opacity-50"
                 >
                   بدء مباشر
                 </button>
                 <button
                   onClick={reconnectLiveSession}
                   disabled={liveModeStatus !== 'disconnected' && liveModeStatus !== 'error'}
-                  className="bg-orange-50 text-orange-700 font-bold py-2.5 rounded-xl hover:bg-orange-100 transition-all disabled:opacity-50 flex items-center justify-center gap-1"
+                  className="flex items-center justify-center gap-1 rounded-xl bg-orange-50 py-2.5 font-bold text-orange-700 transition-all hover:bg-orange-100 disabled:opacity-50"
                 >
-                  <RotateCcw className="w-4 h-4" />
+                  <RotateCcw className="h-4 w-4" />
                   إعادة الاتصال
                 </button>
                 <button
                   onClick={stopLiveSession}
                   disabled={liveModeStatus === 'idle'}
-                  className="bg-rose-50 text-rose-700 font-bold py-2.5 rounded-xl hover:bg-rose-100 transition-all disabled:opacity-50"
+                  className="rounded-xl bg-rose-50 py-2.5 font-bold text-rose-700 transition-all hover:bg-rose-100 disabled:opacity-50"
                 >
                   إنهاء
                 </button>
               </div>
-
             </div>
           )}
 
           {workspaceMode === 'analyzer' && (
-            <div className="flex-1 flex flex-col gap-4">
+            <div className="flex flex-1 flex-col gap-4">
               <div className="grid grid-cols-2 gap-2">
                 {([
                   { key: 'upload_audio', label: 'رفع صوت' },
@@ -1375,10 +1393,10 @@ export default function AssistantPage() {
                       setAnalyzerStatus('idle');
                       setAnalyzerError('');
                     }}
-                    className={`px-3 py-2 text-sm font-bold rounded-xl border transition-all ${
+                    className={`rounded-xl border px-3 py-2 text-sm font-bold transition-all ${
                       analyzerInputMode === mode.key
-                        ? 'bg-sky-50 border-sky-200 text-sky-800'
-                        : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
+                        ? 'border-sky-200 bg-sky-50 text-sky-800'
+                        : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100'
                     }`}
                   >
                     {mode.label}
@@ -1387,12 +1405,12 @@ export default function AssistantPage() {
               </div>
 
               {(analyzerInputMode === 'upload_audio' || analyzerInputMode === 'upload_video') && (
-                <label className="cursor-pointer rounded-2xl border-2 border-dashed border-slate-300 bg-slate-50 p-6 text-center hover:border-sky-300 transition-colors">
-                  <Upload className="w-7 h-7 mx-auto text-slate-500 mb-2" />
+                <label className="cursor-pointer rounded-2xl border-2 border-dashed border-slate-300 bg-slate-50 p-6 text-center transition-colors hover:border-sky-300">
+                  <Upload className="mx-auto mb-2 h-7 w-7 text-slate-500" />
                   <p className="text-sm font-bold text-slate-700">
                     {analyzerInputMode === 'upload_audio' ? 'اختر ملف صوتي للتحليل' : 'اختر ملف فيديو للتحليل'}
                   </p>
-                  <p className="text-xs text-slate-500 mt-1">MP3 / WAV / WEBM أو MP4 / WEBM حسب الوضع</p>
+                  <p className="mt-1 text-xs text-slate-500">MP3 / WAV / WEBM أو MP4 / WEBM حسب الوضع</p>
                   <input
                     type="file"
                     className="hidden"
@@ -1403,7 +1421,7 @@ export default function AssistantPage() {
               )}
 
               {(analyzerInputMode === 'record_audio' || analyzerInputMode === 'record_video') && (
-                <div className="rounded-2xl border border-slate-200 p-4 bg-slate-50 space-y-3">
+                <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
                   <p className="text-sm font-semibold text-slate-700">
                     {analyzerInputMode === 'record_audio'
                       ? 'سجّل مقطعاً صوتياً قصيراً ثم حلّله.'
@@ -1414,7 +1432,7 @@ export default function AssistantPage() {
                       type="button"
                       onClick={startAnalyzerRecording}
                       disabled={analyzerStatus === 'recording' || analyzerStatus === 'processing'}
-                      className="flex-1 bg-slate-900 text-white py-2 rounded-xl font-bold disabled:opacity-50"
+                      className="flex-1 rounded-xl bg-slate-900 py-2 font-bold text-white disabled:opacity-50"
                     >
                       بدء التسجيل
                     </button>
@@ -1422,7 +1440,7 @@ export default function AssistantPage() {
                       type="button"
                       onClick={stopAnalyzerRecordAndAnalyze}
                       disabled={analyzerStatus !== 'recording'}
-                      className="flex-1 bg-rose-50 text-rose-700 py-2 rounded-xl font-bold disabled:opacity-50"
+                      className="flex-1 rounded-xl bg-rose-50 py-2 font-bold text-rose-700 disabled:opacity-50"
                     >
                       إنهاء وتحليل
                     </button>
@@ -1430,8 +1448,8 @@ export default function AssistantPage() {
                 </div>
               )}
 
-              <div className="rounded-2xl border border-slate-100 p-3 bg-white text-sm">
-                <p className="font-bold text-slate-700 mb-1">حالة التحليل</p>
+              <div className="rounded-2xl border border-slate-100 bg-white p-3 text-sm">
+                <p className="mb-1 font-bold text-slate-700">حالة التحليل</p>
                 <p className="text-slate-600">
                   {analyzerStatus === 'idle' && 'اختر طريقة الإدخال ثم ابدأ التحليل.'}
                   {analyzerStatus === 'recording' && 'جاري التسجيل... عند الانتهاء اضغط "إنهاء وتحليل".'}
@@ -1442,21 +1460,21 @@ export default function AssistantPage() {
               </div>
 
               {analyzerResult && (
-                <div className="rounded-3xl border border-slate-200 bg-white p-4 overflow-y-auto max-h-[360px] space-y-4">
+                <div className="max-h-[360px] space-y-4 overflow-y-auto rounded-3xl border border-slate-200 bg-white p-4">
                   <div>
                     <h3 className="text-base font-black text-slate-800">{analyzerResult.title}</h3>
-                    <p className="text-sm text-slate-600 leading-7 mt-1">{analyzerResult.summary}</p>
+                    <p className="mt-1 text-sm leading-7 text-slate-600">{analyzerResult.summary}</p>
                   </div>
 
                   {analyzerResult.metrics.length > 0 && (
                     <div className="grid grid-cols-1 gap-2">
                       {analyzerResult.metrics.map((metric) => (
-                        <div key={metric.label} className="rounded-xl border border-slate-100 p-2.5 bg-slate-50">
-                          <div className="flex items-center justify-between text-xs font-bold text-slate-700 mb-1">
+                        <div key={metric.label} className="rounded-xl border border-slate-100 bg-slate-50 p-2.5">
+                          <div className="mb-1 flex items-center justify-between text-xs font-bold text-slate-700">
                             <span>{metric.label}</span>
                             <span>{metric.score}%</span>
                           </div>
-                          <div className="h-2 rounded-full bg-slate-200 overflow-hidden mb-1">
+                          <div className="mb-1 h-2 overflow-hidden rounded-full bg-slate-200">
                             <div className="h-full bg-gradient-to-r from-sky-400 to-orange-400" style={{ width: `${Math.max(0, Math.min(100, metric.score))}%` }} />
                           </div>
                           <p className="text-xs text-slate-500">{metric.note}</p>
@@ -1467,8 +1485,8 @@ export default function AssistantPage() {
 
                   {analyzerResult.sections.map((section) => (
                     <div key={section.title}>
-                      <p className="font-bold text-slate-800 text-sm mb-1">{section.title}</p>
-                      <ul className="list-disc pr-5 text-sm text-slate-700 space-y-1">
+                      <p className="mb-1 text-sm font-bold text-slate-800">{section.title}</p>
+                      <ul className="list-disc space-y-1 pr-5 text-sm text-slate-700">
                         {section.points.map((point, idx) => (
                           <li key={`${section.title}-${idx}`}>{point}</li>
                         ))}
@@ -1478,8 +1496,8 @@ export default function AssistantPage() {
 
                   {analyzerResult.tips.length > 0 && (
                     <div>
-                      <p className="font-bold text-orange-700 text-sm mb-1">نصائح عملية</p>
-                      <ul className="list-disc pr-5 text-sm text-slate-700 space-y-1">
+                      <p className="mb-1 text-sm font-bold text-orange-700">نصائح عملية</p>
+                      <ul className="list-disc space-y-1 pr-5 text-sm text-slate-700">
                         {analyzerResult.tips.map((tip, i) => (
                           <li key={`tip-${i}`}>{tip}</li>
                         ))}
@@ -1489,8 +1507,8 @@ export default function AssistantPage() {
 
                   {analyzerResult.hints.length > 0 && (
                     <div>
-                      <p className="font-bold text-sky-700 text-sm mb-1">خطوات تالية</p>
-                      <ul className="list-disc pr-5 text-sm text-slate-700 space-y-1">
+                      <p className="mb-1 text-sm font-bold text-sky-700">خطوات تالية</p>
+                      <ul className="list-disc space-y-1 pr-5 text-sm text-slate-700">
                         {analyzerResult.hints.map((hint, i) => (
                           <li key={`hint-${i}`}>{hint}</li>
                         ))}
@@ -1499,9 +1517,9 @@ export default function AssistantPage() {
                   )}
 
                   {analyzerResult.availability_notes.length > 0 && (
-                    <div className="rounded-xl bg-amber-50 border border-amber-100 p-3 text-xs text-amber-900">
-                      <p className="font-bold mb-1">ملاحظة توفر القدرات</p>
-                      <ul className="list-disc pr-5 space-y-1">
+                    <div className="rounded-xl border border-amber-100 bg-amber-50 p-3 text-xs text-amber-900">
+                      <p className="mb-1 font-bold">ملاحظة توفر القدرات</p>
+                      <ul className="list-disc space-y-1 pr-5">
                         {analyzerResult.availability_notes.map((note, i) => (
                           <li key={`availability-${i}`}>{note}</li>
                         ))}

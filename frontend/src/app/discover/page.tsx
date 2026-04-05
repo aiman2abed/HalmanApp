@@ -8,8 +8,8 @@ import {
   Sparkles,
   Volume2,
   VolumeX,
+  Loader2,
 } from "lucide-react";
-import { microLearningVideos } from "@/data/microLearningVideos";
 import { useAuth } from "@/contexts/AuthContext";
 
 interface VideoState {
@@ -40,35 +40,22 @@ function createConfettiPieces(count: number): ConfettiPiece[] {
   }));
 }
 
-/**
- * Short-form discovery feed for HalmanApp.
- * Encourages habit learning and surfaces engagement signals per video item.
- */
 export default function DiscoverPage() {
   const { profile } = useAuth();
 
+  const [videos, setVideos] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [page, setPage] = useState(0);
+  const [hasNext, setHasNext] = useState(true);
+
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [videoStates, setVideoStates] = useState<Record<string, VideoState>>(
-    () => {
-      const initialStates: Record<string, VideoState> = {};
-      microLearningVideos.forEach((video) => {
-        initialStates[video.id] = {
-          videoId: video.id,
-          watched: false,
-          saved: false,
-          liked: false,
-          likeCount: Math.floor(Math.random() * 500) + 50,
-        };
-      });
-      return initialStates;
-    },
-  );
+  const [videoStates, setVideoStates] = useState<Record<string, VideoState>>({});
   const [showConfetti, setShowConfetti] = useState(false);
   const [showXPToast, setShowXPToast] = useState(false);
   const [muted, setMuted] = useState(true);
   const [earnedXp, setEarnedXp] = useState(0);
   const [confettiPieces] = useState<ConfettiPiece[]>(() =>
-    createConfettiPieces(30),
+    createConfettiPieces(30)
   );
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -76,6 +63,47 @@ export default function DiscoverPage() {
   const watchTimers = useRef<Record<string, NodeJS.Timeout>>({});
 
   const displayedXp = (profile?.total_xp ?? 0) + earnedXp;
+
+  const fetchVideos = async (skip: number) => {
+    try {
+      const res = await fetch(`http://localhost:8000/api/discover/videos?skip=${skip}&limit=3`);
+      if (!res.ok) throw new Error("Failed to fetch videos");
+      const data = await res.json();
+      
+      setVideos((prev) => {
+        // Prevent duplicate IDs if strict mode is on
+        const newVids = data.videos.filter(
+          (nv: any) => !prev.some((pv) => pv.id === nv.id)
+        );
+        return [...prev, ...newVids];
+      });
+      setHasNext(data.has_next);
+      
+      setVideoStates((prev) => {
+        const newStates = { ...prev };
+        data.videos.forEach((v: any) => {
+          if (!newStates[v.id]) {
+            newStates[v.id] = {
+              videoId: v.id,
+              watched: false,
+              saved: false,
+              liked: false,
+              likeCount: Math.floor(Math.random() * 500) + 50,
+            };
+          }
+        });
+        return newStates;
+      });
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchVideos(0);
+  }, []);
 
   useEffect(() => {
     const handleScroll = () => {
@@ -88,9 +116,14 @@ export default function DiscoverPage() {
       if (
         newIndex !== currentIndex &&
         newIndex >= 0 &&
-        newIndex < microLearningVideos.length
+        newIndex < videos.length
       ) {
         setCurrentIndex(newIndex);
+      }
+
+      if (newIndex >= videos.length - 2 && hasNext && !loading) {
+        setPage((p) => p + 3);
+        fetchVideos(page + 3);
       }
     };
 
@@ -98,19 +131,16 @@ export default function DiscoverPage() {
     if (!container) return;
 
     container.addEventListener("scroll", handleScroll);
-
     return () => container.removeEventListener("scroll", handleScroll);
-  }, [currentIndex]);
+  }, [currentIndex, videos.length, hasNext, loading, page]);
 
   useEffect(() => {
-    const currentVideo = microLearningVideos[currentIndex];
+    const currentVideo = videos[currentIndex];
     if (!currentVideo) return;
 
     const videoElement = videoRefs.current[currentVideo.id];
     if (videoElement) {
-      videoElement.play().catch(() => {
-        // منطق واجهة المستخدم: بعض الأجهزة تمنع التشغيل التلقائي بدون تفاعل المستخدم.
-      });
+      videoElement.play().catch(() => {});
     }
 
     Object.keys(videoRefs.current).forEach((id) => {
@@ -151,12 +181,11 @@ export default function DiscoverPage() {
         clearTimeout(watchTimerRef[currentVideo.id]);
       }
     };
-  }, [currentIndex, videoStates]);
+  }, [currentIndex, videos, videoStates]);
 
   const handleLike = (videoId: string) => {
     setVideoStates((prev) => {
       const isLiked = prev[videoId]?.liked;
-
       return {
         ...prev,
         [videoId]: {
@@ -183,9 +212,9 @@ export default function DiscoverPage() {
   };
 
   return (
-    <div className="relative h-full w-full overflow-hidden rounded-2xl bg-black shadow-2xl md:rounded-3xl">
+    <div className="relative h-[100dvh] w-full overflow-hidden bg-black pb-20 shadow-2xl md:rounded-3xl md:pb-0" dir="rtl">
       {showXPToast && (
-        <div className="absolute left-1/2 top-20 z-50 -translate-x-1/2 whitespace-nowrap rounded-full bg-gradient-to-r from-yellow-400 to-orange-500 px-6 py-3 text-sm font-bold text-white shadow-2xl animate-bounce">
+        <div className="absolute left-1/2 top-20 z-50 -translate-x-1/2 animate-bounce whitespace-nowrap rounded-full bg-gradient-to-r from-yellow-400 to-orange-500 px-6 py-3 text-sm font-bold text-white shadow-2xl">
           <div className="flex items-center gap-2">
             <Sparkles className="h-5 w-5" />
             <span>+15 نقطة خبرة!</span>
@@ -237,7 +266,7 @@ export default function DiscoverPage() {
         ref={containerRef}
         className="hide-scrollbar h-full w-full snap-y snap-mandatory overflow-y-scroll"
       >
-        {microLearningVideos.map((video) => (
+        {videos.map((video) => (
           <div
             key={video.id}
             className="relative flex h-full w-full snap-start snap-always items-center justify-center bg-black"
@@ -256,7 +285,7 @@ export default function DiscoverPage() {
             <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent" />
 
             <div
-              className="absolute bottom-0 left-0 right-16 p-6 text-right text-white"
+              className="absolute bottom-6 left-20 right-4 p-4 text-right text-white"
               dir="rtl"
             >
               <h2 className="mb-1 text-xl font-bold drop-shadow-md">
@@ -270,7 +299,7 @@ export default function DiscoverPage() {
               </span>
             </div>
 
-            <div className="absolute bottom-24 right-4 flex flex-col items-center gap-4">
+            <div className="absolute bottom-6 left-4 flex flex-col items-center gap-4">
               <div className="mb-2 h-10 w-10 rounded-full border-2 border-white bg-gradient-to-br from-indigo-500 to-purple-500 shadow-lg" />
 
               <button
@@ -316,6 +345,11 @@ export default function DiscoverPage() {
             </div>
           </div>
         ))}
+        {loading && (
+          <div className="flex h-32 w-full items-center justify-center">
+            <Loader2 className="h-8 w-8 animate-spin text-white" />
+          </div>
+        )}
       </div>
 
       <style>{`
