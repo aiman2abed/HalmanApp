@@ -302,7 +302,7 @@ const CampusDashboardPage = () => {
                     >
                       {statusBadge}
                       <div className={`flex h-12 w-12 items-center justify-center rounded-xl ${space.bgColor} ${space.color}`}>
-                        <Icon size={24} strokeWidth={2.5} />
+                        <Icon size={24} />
                       </div>
                     </button>
                     
