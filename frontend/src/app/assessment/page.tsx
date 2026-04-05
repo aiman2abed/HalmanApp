@@ -24,7 +24,7 @@ import confetti from "canvas-confetti";
 interface AssessmentResult {
   dominant_trait: string;
   ai_insight: string;
-  raw_scores: Record<string, number>;
+  raw_scores: scores as any;
 }
 
 export default function AssessmentPage() {

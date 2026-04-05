@@ -38,6 +38,9 @@ const getScopeTypeForRole = (role: string): ScopeType => {
   }
 };
 
+// ==========================================
+// User Row Component
+// ==========================================
 function UserRow({ user, onAssignRole }: { user: any, onAssignRole: (userId: string, role: string, scopeType: string, scopeId: string) => Promise<boolean> }) {
   const existingRole = user.roles && user.roles.length > 0 ? user.roles[0] : null;
   const [selectedRole, setSelectedRole] = useState<string>(existingRole?.role || "student");
@@ -112,13 +115,16 @@ function UserRow({ user, onAssignRole }: { user: any, onAssignRole: (userId: str
   );
 }
 
+// ==========================================
+// MAIN PAGE
+// ==========================================
 export default function DeveloperConsolePage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [activeTab, setActiveTab] = useState<"users" | "system" | "logs">("users");
   const [users, setUsers] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
   const fetchSystemUsers = async () => {
     setIsLoading(true);
@@ -138,9 +144,11 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
     }
   };
 
-  useEffect(() => { fetchSystemUsers(); }, []);
+  useEffect(() => { 
+    fetchSystemUsers(); 
+  }, []);
 
-const assignUserRole = async (targetUserId: string, role: string, scopeType: string, scopeId: string) => {
+  const assignUserRole = async (targetUserId: string, role: string, scopeType: string, scopeId: string) => {
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return false;
@@ -157,6 +165,11 @@ const assignUserRole = async (targetUserId: string, role: string, scopeType: str
       return false;
     }
   };
+
+  // --- السطر الذي كان مفقوداً وتم إرجاعه ---
+  const filteredUsers = users.filter(u => 
+    u.name.toLowerCase().includes(searchQuery.toLowerCase()) || u.id.includes(searchQuery)
+  );
 
   return (
     <Can 
