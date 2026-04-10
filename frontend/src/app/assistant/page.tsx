@@ -1,3 +1,4 @@
+// src/app/assistant/page.tsx
 'use client';
 
 import { useState, useRef, useEffect, useMemo } from 'react';
@@ -17,6 +18,15 @@ import {
 import { motion, AnimatePresence } from 'framer-motion';
 import Image from 'next/image';
 import { useAuth } from '@/contexts/AuthContext';
+
+// Import our API functions
+import { 
+  API_ROOT_URL, 
+  sendChatMessage, 
+  transcribeAudio, 
+  initLiveSession, 
+  analyzeMediaFile 
+} from '@/lib/api';
 
 // ==========================================
 // TYPES
@@ -320,6 +330,7 @@ export default function AssistantPage() {
   const [copiedStateMap, setCopiedStateMap] = useState<Record<string, boolean>>({});
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioStreamRef = useRef<MediaStream | null>(null);
   const audioChunksRef = useRef<BlobPart[]>([]);
@@ -470,20 +481,12 @@ export default function AssistantPage() {
           text: m.text,
         }));
 
-      const response = await fetch('http://localhost:8000/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          user_message: trimmedPrompt,
-          student_name: profile?.display_name || 'يا صديقي',
-          dominant_trait: 'مستكشف',
-          history: historyForBackend,
-        }),
+      const data: ChatApiResponse = await sendChatMessage({
+        user_message: trimmedPrompt,
+        student_name: profile?.display_name || 'يا صديقي',
+        dominant_trait: 'مستكشف',
+        history: historyForBackend,
       });
-
-      if (!response.ok) throw new Error('Failed to reach backend');
-
-      const data: ChatApiResponse = await response.json();
 
       setMessages((prev) => [
         ...prev,
@@ -522,6 +525,9 @@ export default function AssistantPage() {
     if (voiceInputStatus === 'transcribing' || voiceInputStatus === 'recording') return;
     const prompt = inputValue;
     setInputValue('');
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto'; // Reset the textarea height
+    }
     await sendPrompt(prompt, { appendUserMessage: true });
   };
 
@@ -555,20 +561,8 @@ export default function AssistantPage() {
   const transcribeAndSendAudio = async (audioBlob: Blob) => {
     setVoiceInputStatus('transcribing');
 
-    const formData = new FormData();
-    formData.append('file', audioBlob, `voice-note.${audioBlob.type.includes('ogg') ? 'ogg' : 'webm'}`);
-
     try {
-      const response = await fetch('http://localhost:8000/api/transcribe-audio', {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (!response.ok) {
-        throw new Error('Audio transcription request failed');
-      }
-
-      const data: { transcript?: string } = await response.json();
+      const data = await transcribeAudio(audioBlob);
       const transcript = (data.transcript || '').trim();
 
       if (!transcript) {
@@ -851,12 +845,12 @@ export default function AssistantPage() {
     setLiveModeError('');
 
     try {
-      const response = await fetch('http://localhost:8000/api/live/session', { method: 'POST' });
-      if (!response.ok) throw new Error('Failed live bootstrap');
-
-      const session: LiveSessionApiResponse = await response.json();
-      const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-      const wsUrl = `${protocol}://localhost:8000${session.websocket_path}`;
+      const session: LiveSessionApiResponse = await initLiveSession();
+      
+      const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const host = API_ROOT_URL.replace(/^https?:\/\//, '');
+      const wsUrl = `${wsProtocol}//${host}${session.websocket_path}`;
+      
       const ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
@@ -929,24 +923,14 @@ export default function AssistantPage() {
 
   const runAnalyzer = async (blob: Blob, sourceName: string) => {
     const isAudio = blob.type.startsWith('audio/');
-    const endpoint = isAudio ? '/api/analyze-audio' : '/api/analyze-video';
-
+    
     setAnalyzerStatus('processing');
     setAnalyzerError('');
     setAnalyzerSourceName(sourceName);
 
-    const form = new FormData();
-    form.append('file', blob, sourceName);
-
     try {
-      const response = await fetch(`http://localhost:8000${endpoint}`, {
-        method: 'POST',
-        body: form,
-      });
-
-      if (!response.ok) throw new Error('Analyzer request failed');
-
-      const data: AnalyzerResponse = await response.json();
+      const data: AnalyzerResponse = await analyzeMediaFile(blob, sourceName, isAudio);
+      
       setAnalyzerResult(data);
       setAnalyzerStatus('done');
     } catch (error) {
@@ -1226,7 +1210,7 @@ export default function AssistantPage() {
           </div>
 
           <div className="border-t border-slate-100 bg-white p-3 md:p-4">
-            <div className="flex items-center gap-2">
+            <div className="flex items-end gap-2">
               <button
                 onClick={handleAudioRecordToggle}
                 className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-xl shadow-md transition-all ${
@@ -1243,21 +1227,38 @@ export default function AssistantPage() {
                 )}
               </button>
 
-              <input
-                type="text"
-                value={voiceStatusLabel || inputValue}
-                onChange={(e) => setInputValue(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-                placeholder="اكتب رسالة، سؤال، أو حتى كود..."
-                disabled={isThinking || voiceInputStatus !== 'idle'}
-                className="flex-1 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none transition-all focus:border-orange-400 focus:ring-2 focus:ring-orange-100 disabled:opacity-50"
-              />
+              {voiceInputStatus === 'recording' ? (
+                <div className="flex h-12 flex-1 items-center rounded-xl border border-rose-200 bg-rose-50 px-4 text-sm font-bold text-rose-600">
+                  {voiceStatusLabel}
+                </div>
+              ) : (
+                <textarea
+                  ref={textareaRef}
+                  value={inputValue}
+                  onChange={(e) => {
+                    setInputValue(e.target.value);
+                    e.target.style.height = 'auto';
+                    e.target.style.height = `${e.target.scrollHeight}px`;
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      handleSend();
+                    }
+                  }}
+                  placeholder="اكتب رسالة، سؤال، أو حتى كود..."
+                  disabled={isThinking || voiceInputStatus !== 'idle'}
+                  rows={1}
+                  className="flex-1 resize-none overflow-hidden rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none transition-all focus:border-orange-400 focus:ring-2 focus:ring-orange-100 disabled:opacity-50"
+                  style={{ minHeight: '48px', maxHeight: '160px', overflowY: inputValue.split('\n').length > 5 ? 'auto' : 'hidden' }}
+                />
+              )}
 
               {voiceInputStatus === 'recording' && (
                 <button
                   type="button"
                   onClick={() => stopAudioRecording(true)}
-                  className="rounded-xl bg-slate-100 px-3 py-2 text-xs font-bold text-slate-700 transition-colors hover:bg-slate-200"
+                  className="h-12 rounded-xl bg-slate-100 px-3 text-xs font-bold text-slate-700 transition-colors hover:bg-slate-200"
                 >
                   إلغاء
                 </button>

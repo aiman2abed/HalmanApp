@@ -1,3 +1,4 @@
+// src/app/assessment/page.tsx
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
@@ -16,7 +17,10 @@ import { motion, AnimatePresence } from "framer-motion";
 import SwipeCard from "@/components/SwipeCard";
 import RiasecRadar from "@/components/RiasecRadar";
 import { useAuth } from "@/contexts/AuthContext";
-import { submitAssessment, fetchAssessmentCards } from "@/lib/api";
+
+// Import our API functions
+import { submitAssessment, fetchAssessmentCards, fetchAdaptiveQuestions } from "@/lib/api";
+
 import { supabase } from "@/lib/supabase";
 import type { AssessmentCard, RiasecScores } from "@/types";
 import confetti from "canvas-confetti"; 
@@ -77,18 +81,8 @@ export default function AssessmentPage() {
   const generateAdaptiveQuestions = async () => {
     setIsGeneratingAdaptive(true);
     try {
-      // قراءة الرابط من البيئة، وإذا لم يوجد نستخدم اللوكال هوست
-      const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-      
-      const res = await fetch(`${API_URL}/api/adaptive-questions`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ current_scores: scores })
-      });
-
-      if (!res.ok) throw new Error("API Request Failed");
-      
-      const data = await res.json();
+      // Use the newly abstracted API call
+      const data = await fetchAdaptiveQuestions(scores);
       
       if (data?.newCards && data.newCards.length > 0) {
         const formattedCards = data.newCards.map((c: any, i: number) => ({

@@ -1,3 +1,4 @@
+// src/app/discover/page.tsx
 "use client";
 
 import { useEffect, useRef, useState } from "react";
@@ -11,6 +12,9 @@ import {
   Loader2,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
+
+// Import our API function
+import { fetchDiscoverVideos } from "@/lib/api";
 
 interface VideoState {
   videoId: string;
@@ -66,9 +70,8 @@ export default function DiscoverPage() {
 
   const fetchVideos = async (skip: number) => {
     try {
-      const res = await fetch(`http://localhost:8000/api/discover/videos?skip=${skip}&limit=3`);
-      if (!res.ok) throw new Error("Failed to fetch videos");
-      const data = await res.json();
+      // Use the newly abstracted API call
+      const data = await fetchDiscoverVideos(skip, 3);
       
       setVideos((prev) => {
         // Prevent duplicate IDs if strict mode is on

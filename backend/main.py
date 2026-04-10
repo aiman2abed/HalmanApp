@@ -278,11 +278,65 @@ def generate_adaptive_questions(req: AdaptiveRequest):
         print(f"Adaptive Error: {e}")
         return {"newCards": []}
 
-# بقية الـ Endpoints الأصلية (Chat, Transcribe, Live, Discover)
-@app.post("/api/chat")
-def chat_with_halman(request: ChatRequest):
-    raise HTTPException(status_code=501, detail="Chat logic simplified for brevity")
 
+@app.post("/api/chat", response_model=ChatResponse)
+def chat_with_halman(request: ChatRequest):
+    require_gemini_client()
+
+    # 1. Analyze input style to adjust Halman's tone
+    input_style = classify_input_style(request.user_message)
+
+    # 2. Build the dynamic system instruction
+    sys_instruct = build_system_instruction(
+        student_name=request.student_name,
+        dominant_trait=request.dominant_trait,
+        input_style=input_style
+    )
+
+    # 3. Format recent history for the Gemini SDK
+    recent_history = get_recent_history(request.history)
+    contents = []
+    
+    for msg in recent_history:
+        role = "user" if msg.role == "user" else "model"
+        contents.append(types.Content(role=role, parts=[types.Part.from_text(text=msg.text)]))
+
+    # Append the current user message
+    contents.append(types.Content(role="user", parts=[types.Part.from_text(text=request.user_message)]))
+
+    try:
+        # 4. Call the Gemini model
+        response = client.models.generate_content(
+            model=CHAT_MODEL,
+            contents=contents,
+            config=types.GenerateContentConfig(
+                system_instruction=sys_instruct,
+                temperature=0.7,
+                # Force the model to return JSON to match your frontend expectations
+                response_mime_type="application/json" 
+            )
+        )
+
+        # 5. Parse and validate the JSON response
+        parsed_data = parse_json_object(response.text)
+
+        # Fallback if the AI didn't return proper JSON
+        if not parsed_data or "reply" not in parsed_data:
+            return ChatResponse(
+                reply="عذراً، صار عندي مشكلة صغيرة في ترتيب أفكاري. ممكن تعيد سؤالك؟",
+                blocks=[]
+            )
+
+        # 6. Return the clean data to the frontend
+        return ChatResponse(
+            reply=parsed_data.get("reply", ""),
+            blocks=parsed_data.get("blocks", [])
+        )
+
+    except Exception as e:
+        print(f"Chat Error: {e}")
+        raise HTTPException(status_code=500, detail="فشل الاتصال بالذكاء الاصطناعي")
+    
 @app.get("/api/discover/videos")
 def get_discover_videos(skip: int = 0, limit: int = 3):
     return {"videos": [], "has_next": False, "total": 0}

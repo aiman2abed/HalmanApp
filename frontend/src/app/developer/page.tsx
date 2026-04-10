@@ -1,3 +1,4 @@
+// src/app/developer/page.tsx
 "use client";
 
 import { useState, useEffect } from "react";
@@ -17,6 +18,9 @@ import {
 import { Can } from "@/components/auth/Can";
 import { UserRole, ScopeType } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
+
+// Import our API functions
+import { fetchSystemUsers, assignUserRole } from "@/lib/api";
 
 const AVAILABLE_ROLES: { value: UserRole; label: string }[] = [
   { value: "app_developer", label: "مطور نظام (سوبر أدمن)" },
@@ -124,18 +128,13 @@ export default function DeveloperConsolePage() {
   const [users, setUsers] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
-  const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-
-  const fetchSystemUsers = async () => {
+  const loadSystemUsers = async () => {
     setIsLoading(true);
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return;
-      const res = await fetch(`${API_URL}/api/developer/users`, {
-        headers: { "Authorization": `Bearer ${session.access_token}` }
-      });
-      if (!res.ok) throw new Error("فشل جلب المستخدمين");
-      const data = await res.json();
+      
+      const data = await fetchSystemUsers(session.access_token);
       setUsers(data.users || []);
     } catch (error) {
       console.error(error);
@@ -145,19 +144,22 @@ export default function DeveloperConsolePage() {
   };
 
   useEffect(() => { 
-    fetchSystemUsers(); 
+    loadSystemUsers(); 
   }, []);
 
-  const assignUserRole = async (targetUserId: string, role: string, scopeType: string, scopeId: string) => {
+  const handleAssignRole = async (targetUserId: string, role: string, scopeType: string, scopeId: string) => {
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return false;
-      const res = await fetch(`${API_URL}/api/developer/assign-role`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${session.access_token}` },
-        body: JSON.stringify({ target_user_id: targetUserId, role, scope_type: scopeType, scope_id: scopeId || null })
-      });
-      if (!res.ok) throw new Error("فشل تعيين الصلاحية");
+      
+      await assignUserRole(
+        session.access_token,
+        targetUserId,
+        role,
+        scopeType,
+        scopeId || null
+      );
+      
       return true;
     } catch (error: any) {
       console.error(error);
@@ -166,7 +168,6 @@ export default function DeveloperConsolePage() {
     }
   };
 
-  // --- السطر الذي كان مفقوداً وتم إرجاعه ---
   const filteredUsers = users.filter(u => 
     u.name.toLowerCase().includes(searchQuery.toLowerCase()) || u.id.includes(searchQuery)
   );
@@ -253,7 +254,7 @@ export default function DeveloperConsolePage() {
                   />
                 </div>
                 <button 
-                  onClick={fetchSystemUsers}
+                  onClick={loadSystemUsers}
                   className="flex items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-2.5 text-xs md:text-sm font-bold text-white transition-transform active:scale-95 shrink-0"
                 >
                   <Activity className="h-4 w-4" />
@@ -272,7 +273,7 @@ export default function DeveloperConsolePage() {
                   <div className="text-center py-10 text-xs font-bold text-slate-500">لا يوجد مستخدمين.</div>
                 ) : (
                   filteredUsers.map((u) => (
-                    <UserRow key={u.id} user={u} onAssignRole={assignUserRole} />
+                    <UserRow key={u.id} user={u} onAssignRole={handleAssignRole} />
                   ))
                 )}
               </div>
