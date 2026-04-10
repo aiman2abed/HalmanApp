@@ -1,3 +1,4 @@
+// src/components/Navigation.tsx
 "use client";
 
 import Link from "next/link";
@@ -60,9 +61,6 @@ export default function Navigation() {
     { id: "profile", name: "حسابي", icon: UserCircle, path: "/settings" },
   ];
 
-  // Dynamically set grid columns based on how many items are visible
-  const mobileGridCols = `grid-cols-${navItems.length}`;
-
   return (
     <>
       {/* Mobile Bottom Navigation */}
@@ -71,7 +69,8 @@ export default function Navigation() {
         dir="rtl"
         className="fixed inset-x-0 bottom-0 z-[100] border-t border-slate-200/60 bg-white/90 px-2 pt-2 pb-[max(env(safe-area-inset-bottom),0.75rem)] shadow-[0_-8px_30px_rgba(0,0,0,0.06)] backdrop-blur-xl md:hidden"
       >
-        <ul className={`grid ${mobileGridCols} gap-1`}>
+        {/* Replaced dynamic Grid with Flexbox */}
+        <ul className="flex w-full items-center justify-between gap-1">
           {navItems.map((item) => {
             const Icon = item.icon;
             const isActive = pathname === item.path;
@@ -89,7 +88,8 @@ export default function Navigation() {
                                 : "bg-orange-100/80";
 
             return (
-              <li key={`mobile-${item.id}`} className="relative h-full">
+              // Added flex-1 and min-w-0 to ensure items share space evenly and don't overflow
+              <li key={`mobile-${item.id}`} className="relative h-full flex-1 min-w-0">
                 <Link
                   href={item.path}
                   aria-label={item.name}
@@ -101,7 +101,7 @@ export default function Navigation() {
                     <motion.div
                       layoutId="mobile-active-nav-pill"
                       className={`absolute inset-0 rounded-2xl ${activeBgColor}`}
-                      transition={{ type: "spring", stiffness: 400, damping: 30 }}
+                      transition={{ type: "spring", stiffness: 400, damping: 100 }}
                     />
                   )}
                   
@@ -111,7 +111,7 @@ export default function Navigation() {
                       strokeWidth={isActive ? 2.5 : 2}
                       className={`transition-transform duration-300 ${isActive ? "-translate-y-0.5" : ""}`}
                     />
-                    <span className={`mt-1 text-[10px] sm:text-[11px] font-black transition-opacity duration-300 ${isActive ? "opacity-100" : "opacity-80"}`}>
+                    <span className={`mt-1 text-[10px] sm:text-[11px] font-black truncate max-w-full transition-opacity duration-300 ${isActive ? "opacity-100" : "opacity-80"}`}>
                       {item.name}
                     </span>
                   </div>

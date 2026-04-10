@@ -19,8 +19,9 @@ import { Can } from "@/components/auth/Can";
 import { UserRole, ScopeType } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
 
-// Import our API functions
+// Import API and our new component
 import { fetchSystemUsers, assignUserRole } from "@/lib/api";
+import PullToRefresh from "@/components/PullToRefresh";
 
 const AVAILABLE_ROLES: { value: UserRole; label: string }[] = [
   { value: "app_developer", label: "مطور نظام (سوبر أدمن)" },
@@ -183,104 +184,109 @@ export default function DeveloperConsolePage() {
         </div>
       }
     >
-      <div className="flex min-h-[100dvh] w-full flex-col bg-slate-50/50 pb-24 md:pb-6" dir="rtl">
-        
-        {/* Header */}
-        <div className="sticky top-0 z-20 flex items-center justify-between bg-white/90 p-3 md:p-4 backdrop-blur-md border-b border-slate-200 shadow-sm">
-          <div className="flex items-center gap-3">
-            <div className="rounded-xl bg-rose-100 p-2 border border-rose-200">
-              <ShieldAlert className="h-5 w-5 md:h-6 md:w-6 text-rose-600" />
-            </div>
-            <div>
-              <h1 className="text-base md:text-lg font-black text-slate-800 leading-tight">لوحة المطور</h1>
-              <p className="text-[10px] md:text-xs font-bold text-rose-600">صلاحيات كاملة</p>
-            </div>
-          </div>
-        </div>
-
-        <div className="mx-auto w-full max-w-5xl space-y-4 md:space-y-6 px-3 md:px-6 mt-4 md:mt-6">
+      {/* We wrap the entire layout inside PullToRefresh.
+        The wrapper takes full height, handles overflow, and triggers `loadSystemUsers` on pull down! 
+      */}
+      <PullToRefresh onRefresh={loadSystemUsers}>
+        <div className="flex min-h-[100dvh] w-full flex-col pb-24 md:pb-6" dir="rtl">
           
-          {/* Quick System Stats */}
-          <div className="grid grid-cols-2 gap-3 md:gap-4 md:grid-cols-4">
-            {[
-              { label: "المستخدمين", value: users.length.toString(), icon: Users, color: "text-blue-600", bg: "bg-blue-100" },
-              { label: "المدارس", value: "1", icon: Database, color: "text-emerald-600", bg: "bg-emerald-100" },
-              { label: "السيرفر", value: "متصل", icon: Activity, color: "text-purple-600", bg: "bg-purple-100" },
-              { label: "أخطاء", value: "0", icon: ShieldAlert, color: "text-rose-600", bg: "bg-rose-100" },
-            ].map((stat, idx) => (
-              <div key={idx} className="rounded-2xl md:rounded-3xl border border-slate-200 bg-white p-3 sm:p-4 shadow-sm">
-                <div className={`mb-2 w-fit rounded-lg p-2 ${stat.bg}`}>
-                  <stat.icon className={`h-4 w-4 md:h-5 md:w-5 ${stat.color}`} />
-                </div>
-                <h3 className="text-xl sm:text-2xl font-black text-slate-800">{stat.value}</h3>
-                <p className="text-[10px] sm:text-xs font-bold text-slate-500 mt-1">{stat.label}</p>
+          {/* Header */}
+          <div className="sticky top-0 z-20 flex items-center justify-between bg-white/90 p-3 md:p-4 backdrop-blur-md border-b border-slate-200 shadow-sm">
+            <div className="flex items-center gap-3">
+              <div className="rounded-xl bg-rose-100 p-2 border border-rose-200">
+                <ShieldAlert className="h-5 w-5 md:h-6 md:w-6 text-rose-600" />
               </div>
-            ))}
+              <div>
+                <h1 className="text-base md:text-lg font-black text-slate-800 leading-tight">لوحة المطور</h1>
+                <p className="text-[10px] md:text-xs font-bold text-rose-600">صلاحيات كاملة</p>
+              </div>
+            </div>
           </div>
 
-          {/* Navigation Tabs */}
-          <div className="flex overflow-x-auto rounded-2xl border border-slate-200 bg-white p-1.5 shadow-sm hide-scrollbar">
-            {[
-              { id: "users", label: "إدارة المستخدمين" },
-              { id: "system", label: "إعدادات النظام" },
-              { id: "logs", label: "سجلات النظام" },
-            ].map((tab) => (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id as any)}
-                className={`whitespace-nowrap rounded-xl px-4 md:px-5 py-2 md:py-2.5 text-xs md:text-sm font-bold transition-all ${
-                  activeTab === tab.id
-                    ? "bg-rose-50 text-rose-700 shadow-sm border border-rose-100"
-                    : "text-slate-500 hover:bg-slate-50 hover:text-slate-700"
-                }`}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
-
-          {activeTab === "users" && (
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
-              {/* Search Bar */}
-              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 rounded-2xl border border-slate-200 bg-white p-2 shadow-sm">
-                <div className="flex items-center flex-1 gap-2 bg-slate-50 rounded-xl px-3 py-1">
-                  <Search className="h-4 w-4 text-slate-400 shrink-0" />
-                  <input
-                    type="text"
-                    placeholder="بحث..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="flex-1 bg-transparent text-xs md:text-sm font-medium outline-none placeholder:text-slate-400 py-2"
-                  />
-                </div>
-                <button 
-                  onClick={loadSystemUsers}
-                  className="flex items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-2.5 text-xs md:text-sm font-bold text-white transition-transform active:scale-95 shrink-0"
-                >
-                  <Activity className="h-4 w-4" />
-                  <span>تحديث</span>
-                </button>
-              </div>
-
-              {/* Users List */}
-              <div className="rounded-3xl border border-slate-200 bg-white overflow-hidden shadow-sm">
-                {isLoading ? (
-                  <div className="flex flex-col items-center justify-center py-12">
-                    <Loader2 className="h-6 w-6 animate-spin text-rose-500 mb-3" />
-                    <p className="text-xs font-bold text-slate-500">جاري الجلب...</p>
+          <div className="mx-auto w-full max-w-5xl space-y-4 md:space-y-6 px-3 md:px-6 mt-4 md:mt-6">
+            
+            {/* Quick System Stats */}
+            <div className="grid grid-cols-2 gap-3 md:gap-4 md:grid-cols-4">
+              {[
+                { label: "المستخدمين", value: users.length.toString(), icon: Users, color: "text-blue-600", bg: "bg-blue-100" },
+                { label: "المدارس", value: "1", icon: Database, color: "text-emerald-600", bg: "bg-emerald-100" },
+                { label: "السيرفر", value: "متصل", icon: Activity, color: "text-purple-600", bg: "bg-purple-100" },
+                { label: "أخطاء", value: "0", icon: ShieldAlert, color: "text-rose-600", bg: "bg-rose-100" },
+              ].map((stat, idx) => (
+                <div key={idx} className="rounded-2xl md:rounded-3xl border border-slate-200 bg-white p-3 sm:p-4 shadow-sm">
+                  <div className={`mb-2 w-fit rounded-lg p-2 ${stat.bg}`}>
+                    <stat.icon className={`h-4 w-4 md:h-5 md:w-5 ${stat.color}`} />
                   </div>
-                ) : filteredUsers.length === 0 ? (
-                  <div className="text-center py-10 text-xs font-bold text-slate-500">لا يوجد مستخدمين.</div>
-                ) : (
-                  filteredUsers.map((u) => (
-                    <UserRow key={u.id} user={u} onAssignRole={handleAssignRole} />
-                  ))
-                )}
-              </div>
-            </motion.div>
-          )}
+                  <h3 className="text-xl sm:text-2xl font-black text-slate-800">{stat.value}</h3>
+                  <p className="text-[10px] sm:text-xs font-bold text-slate-500 mt-1">{stat.label}</p>
+                </div>
+              ))}
+            </div>
+
+            {/* Navigation Tabs */}
+            <div className="flex overflow-x-auto rounded-2xl border border-slate-200 bg-white p-1.5 shadow-sm hide-scrollbar">
+              {[
+                { id: "users", label: "إدارة المستخدمين" },
+                { id: "system", label: "إعدادات النظام" },
+                { id: "logs", label: "سجلات النظام" },
+              ].map((tab) => (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id as any)}
+                  className={`whitespace-nowrap rounded-xl px-4 md:px-5 py-2 md:py-2.5 text-xs md:text-sm font-bold transition-all ${
+                    activeTab === tab.id
+                      ? "bg-rose-50 text-rose-700 shadow-sm border border-rose-100"
+                      : "text-slate-500 hover:bg-slate-50 hover:text-slate-700"
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+
+            {activeTab === "users" && (
+              <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
+                {/* Search Bar */}
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 rounded-2xl border border-slate-200 bg-white p-2 shadow-sm">
+                  <div className="flex items-center flex-1 gap-2 bg-slate-50 rounded-xl px-3 py-1">
+                    <Search className="h-4 w-4 text-slate-400 shrink-0" />
+                    <input
+                      type="text"
+                      placeholder="بحث..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="flex-1 bg-transparent text-xs md:text-sm font-medium outline-none placeholder:text-slate-400 py-2"
+                    />
+                  </div>
+                  <button 
+                    onClick={loadSystemUsers}
+                    className="flex items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-2.5 text-xs md:text-sm font-bold text-white transition-transform active:scale-95 shrink-0"
+                  >
+                    <Activity className="h-4 w-4" />
+                    <span>تحديث</span>
+                  </button>
+                </div>
+
+                {/* Users List */}
+                <div className="rounded-3xl border border-slate-200 bg-white overflow-hidden shadow-sm">
+                  {isLoading ? (
+                    <div className="flex flex-col items-center justify-center py-12">
+                      <Loader2 className="h-6 w-6 animate-spin text-rose-500 mb-3" />
+                      <p className="text-xs font-bold text-slate-500">جاري الجلب...</p>
+                    </div>
+                  ) : filteredUsers.length === 0 ? (
+                    <div className="text-center py-10 text-xs font-bold text-slate-500">لا يوجد مستخدمين.</div>
+                  ) : (
+                    filteredUsers.map((u) => (
+                      <UserRow key={u.id} user={u} onAssignRole={handleAssignRole} />
+                    ))
+                  )}
+                </div>
+              </motion.div>
+            )}
+          </div>
         </div>
-      </div>
+      </PullToRefresh>
     </Can>
   );
 }

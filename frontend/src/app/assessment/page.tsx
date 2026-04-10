@@ -1,7 +1,7 @@
 // src/app/assessment/page.tsx
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import Link from "next/link";
 import { 
   Loader2, 
@@ -48,6 +48,10 @@ export default function AssessmentPage() {
     Social: 0, Enterprising: 0, Conventional: 0,
   });
 
+  // GATES to prevent React Strict Mode from double-firing our API calls
+  const adaptiveTriggered = useRef(false);
+  const analysisTriggered = useRef(false);
+
   useEffect(() => {
     const loadCards = async () => {
       try {
@@ -81,7 +85,6 @@ export default function AssessmentPage() {
   const generateAdaptiveQuestions = async () => {
     setIsGeneratingAdaptive(true);
     try {
-      // Use the newly abstracted API call
       const data = await fetchAdaptiveQuestions(scores);
       
       if (data?.newCards && data.newCards.length > 0) {
@@ -98,19 +101,6 @@ export default function AssessmentPage() {
       setIsGeneratingAdaptive(false);
     }
   };
-
-  useEffect(() => {
-    const isBasicFinished = cards.length > 0 && currentIndex === cards.length;
-    
-    if (isBasicFinished && !hasInjectedAdaptive && !isAnalyzing) {
-      generateAdaptiveQuestions();
-      return;
-    }
-
-    if (isBasicFinished && hasInjectedAdaptive && !isAnalyzing && !aiResult) {
-      submitAndPersistAssessment();
-    }
-  }, [currentIndex, cards.length, hasInjectedAdaptive]);
 
   const submitAndPersistAssessment = async () => {
     setIsAnalyzing(true);
@@ -146,6 +136,24 @@ export default function AssessmentPage() {
       setIsAnalyzing(false);
     }
   };
+
+  // The newly protected trigger effect
+  useEffect(() => {
+    const isBasicFinished = cards.length > 0 && currentIndex === cards.length;
+    
+    if (isBasicFinished) {
+      // Gate 1: Only trigger adaptive generation exactly once
+      if (!hasInjectedAdaptive && !adaptiveTriggered.current) {
+        adaptiveTriggered.current = true;
+        generateAdaptiveQuestions();
+      } 
+      // Gate 2: Only trigger final analysis exactly once
+      else if (hasInjectedAdaptive && !analysisTriggered.current) {
+        analysisTriggered.current = true;
+        submitAndPersistAssessment();
+      }
+    }
+  }, [currentIndex, cards.length, hasInjectedAdaptive]);
 
   const handleSwipe = (direction: "left" | "right", trait: keyof RiasecScores) => {
     if (direction === "right") {

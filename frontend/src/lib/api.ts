@@ -16,6 +16,8 @@ export async function fetchAssessmentCards(): Promise<AssessmentCard[]> {
   const response = await fetch(`${API_BASE_URL}/assessment-cards`);
 
   if (!response.ok) {
+    const errorText = await response.text();
+    console.error("Backend error details:", response.status, errorText);
     throw new Error("Failed to fetch assessment cards");
   }
 
