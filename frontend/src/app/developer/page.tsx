@@ -1,8 +1,9 @@
 // src/app/developer/page.tsx
 "use client";
 
+import CmsVideoManager from "@/components/CmsVideoManager";
 import { useState, useEffect } from "react";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import {
   ShieldAlert,
   Users,
@@ -125,7 +126,8 @@ function UserRow({ user, onAssignRole }: { user: any, onAssignRole: (userId: str
 // ==========================================
 export default function DeveloperConsolePage() {
   const [searchQuery, setSearchQuery] = useState("");
-  const [activeTab, setActiveTab] = useState<"users" | "system" | "logs">("users");
+  // Added "cms" to the state type
+  const [activeTab, setActiveTab] = useState<"users" | "system" | "logs" | "cms">("users");
   const [users, setUsers] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -229,6 +231,7 @@ export default function DeveloperConsolePage() {
                 { id: "users", label: "إدارة المستخدمين" },
                 { id: "system", label: "إعدادات النظام" },
                 { id: "logs", label: "سجلات النظام" },
+                { id: "cms", label: "إدارة المحتوى" }, // Added CMS tab here
               ].map((tab) => (
                 <button
                   key={tab.id}
@@ -284,6 +287,14 @@ export default function DeveloperConsolePage() {
                 </div>
               </motion.div>
             )}
+
+            {/* ===== NEW CMS TAB RENDER BLOCK ===== */}
+            {activeTab === "cms" && (
+              <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+                <CmsVideoManager />
+              </motion.div>
+            )}
+
           </div>
         </div>
       </PullToRefresh>

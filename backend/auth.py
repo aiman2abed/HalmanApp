@@ -1,3 +1,4 @@
+# /Users/aimanabed/Desktop/Halman/HalmanApp/backend/auth.py
 import jwt
 from fastapi import HTTPException, Header, Depends
 from database import get_db
@@ -20,3 +21,16 @@ def verify_app_developer(user_id: str):
     res = db.table("user_role_assignments").select("*").eq("user_id", user_id).eq("role", "app_developer").execute()
     if not res.data or len(res.data) == 0:
         raise HTTPException(status_code=403, detail="Forbidden")
+    
+def verify_content_manager(user_id: str):
+    db = get_db()
+    res = db.table("user_role_assignments").select("role").eq("user_id", user_id).execute()
+    
+    if not res.data:
+        raise HTTPException(status_code=403, detail="Forbidden: No roles found.")
+        
+    roles = [r["role"] for r in res.data]
+    allowed_roles = {"app_developer", "school_admin", "space_admin", "class_teacher"}
+    
+    if not any(role in allowed_roles for role in roles):
+        raise HTTPException(status_code=403, detail="Forbidden: You do not have content management permissions.")

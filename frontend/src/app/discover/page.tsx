@@ -12,9 +12,10 @@ import {
   Loader2,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
+import { supabase } from "@/lib/supabase";
 
-// Import our API function
-import { fetchDiscoverVideos } from "@/lib/api";
+// Import our API functions
+import { fetchDiscoverVideos, toggleLikeVideo, toggleSaveVideo } from "@/lib/api";
 
 interface VideoState {
   videoId: string;
@@ -70,11 +71,9 @@ export default function DiscoverPage() {
 
   const fetchVideos = async (skip: number) => {
     try {
-      // Use the newly abstracted API call
       const data = await fetchDiscoverVideos(skip, 3);
       
       setVideos((prev) => {
-        // Prevent duplicate IDs if strict mode is on
         const newVids = data.videos.filter(
           (nv: any) => !prev.some((pv) => pv.id === nv.id)
         );
@@ -186,7 +185,8 @@ export default function DiscoverPage() {
     };
   }, [currentIndex, videos, videoStates]);
 
-  const handleLike = (videoId: string) => {
+  const handleLike = async (videoId: string) => {
+    // Optimistic UI update
     setVideoStates((prev) => {
       const isLiked = prev[videoId]?.liked;
       return {
@@ -198,13 +198,34 @@ export default function DiscoverPage() {
         },
       };
     });
+
+    // Background Database update
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session) {
+        await toggleLikeVideo(session.access_token, videoId);
+      }
+    } catch (error) {
+      console.error("Failed to sync like with database", error);
+    }
   };
 
-  const handleSave = (videoId: string) => {
+  const handleSave = async (videoId: string) => {
+    // Optimistic UI update
     setVideoStates((prev) => ({
       ...prev,
       [videoId]: { ...prev[videoId], saved: !prev[videoId]?.saved },
     }));
+
+    // Background Database update
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session) {
+        await toggleSaveVideo(session.access_token, videoId);
+      }
+    } catch (error) {
+      console.error("Failed to sync save with database", error);
+    }
   };
 
   const toggleMute = () => {

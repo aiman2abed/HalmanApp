@@ -1,5 +1,7 @@
+// src/app/family/page.tsx
 "use client";
 
+import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import {
   Users,
@@ -9,26 +11,38 @@ import {
   Star,
   ChevronLeft,
   GraduationCap,
-  CalendarDays
+  CalendarDays,
+  Loader2
 } from "lucide-react";
 import { Can } from "@/components/auth/Can";
 import { useAuth } from "@/contexts/AuthContext";
-
-const MOCK_CHILDREN = [
-  {
-    id: "child-1", name: "أحمد كريم", level: 4, xp: 1850, nextLevelXp: 2000, track: "مختبر الحاسوب",
-    recentTeacherNote: "أحمد أظهر مهارة رائعة في حل المشكلات البرمجية اليوم! اقترحت له مسار هندسة البرمجيات المتقدم.",
-    noteAuthor: "أ. ليلى", badges: ["مكتشف الأخطاء", "مفكر مبدع"]
-  },
-  {
-    id: "child-2", name: "ليلى كريم", level: 2, xp: 750, nextLevelXp: 1000, track: "ورشة الروبوتات",
-    recentTeacherNote: "ليلى قامت ببناء أول دائرة كهربائية بنجاح.",
-    noteAuthor: "م. سامي", badges: ["مهندس صغير"]
-  }
-];
+import { supabase } from "@/lib/supabase";
+import { fetchFamilyChildren } from "@/lib/api";
 
 export default function FamilyDashboardPage() {
   const { profile } = useAuth();
+  
+  // --- REAL DATA STATE ---
+  const [children, setChildren] = useState<any[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+
+  // --- FETCH DATA ON LOAD ---
+  useEffect(() => {
+    const loadChildren = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session) return;
+        
+        const data = await fetchFamilyChildren(session.access_token);
+        setChildren(data.children || []);
+      } catch (error) {
+        console.error("Failed to load children:", error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    loadChildren();
+  }, []);
 
   return (
     <Can 
@@ -67,78 +81,90 @@ export default function FamilyDashboardPage() {
             <Users className="absolute -left-4 -bottom-4 h-24 w-24 md:h-32 md:w-32 text-white opacity-10 pointer-events-none" />
           </div>
 
-          {/* Children Cards */}
+          {/* Children Cards or Loading State */}
           <div className="space-y-4 md:space-y-6">
-            {MOCK_CHILDREN.map((child) => {
-              const progressPercent = Math.min((child.xp / child.nextLevelXp) * 100, 100);
+            {isLoading ? (
+              <div className="flex flex-col items-center justify-center py-16">
+                <Loader2 className="h-8 w-8 animate-spin text-purple-500 mb-4" />
+                <p className="text-sm font-bold text-slate-500">جاري جلب بيانات الأبناء...</p>
+              </div>
+            ) : children.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-16 bg-white rounded-3xl border border-slate-200 shadow-sm">
+                <Users className="h-12 w-12 text-slate-300 mb-3" />
+                <p className="text-sm font-bold text-slate-500">لم يتم ربط أي أبناء بحسابك بعد.</p>
+              </div>
+            ) : (
+              children.map((child) => {
+                const progressPercent = Math.min((child.xp / child.nextLevelXp) * 100, 100);
 
-              return (
-                <motion.div 
-                  initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
-                  key={child.id} 
-                  className="rounded-3xl border border-slate-200 bg-white overflow-hidden shadow-sm"
-                >
-                  {/* Child Header - Mobile Wrap */}
-                  <div className="p-4 md:p-5 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                    <div className="flex items-center gap-3">
-                      <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-purple-50 text-lg md:text-xl font-black text-purple-600 border border-purple-100">
-                        {child.name[0]}
-                      </div>
-                      <div>
-                        <h3 className="text-lg md:text-xl font-black text-slate-800">{child.name}</h3>
-                        <p className="text-xs md:text-sm font-bold text-slate-500 flex items-center gap-1.5 mt-0.5">
-                          <GraduationCap className="w-3.5 h-3.5 text-purple-400" /> {child.track}
-                        </p>
-                      </div>
-                    </div>
-                    
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      {child.badges.map((badge, idx) => (
-                        <span key={idx} className="flex items-center gap-1 bg-amber-50 border border-amber-100 text-amber-700 text-[10px] md:text-xs font-black px-2 py-1 md:px-2.5 md:py-1.5 rounded-xl">
-                          <Star className="w-3 h-3 fill-amber-500" /> {badge}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Progress & Stats */}
-                  <div className="p-4 md:p-5 bg-slate-50/50">
-                    <div className="flex justify-between items-end mb-2">
-                      <div className="flex items-center gap-1.5">
-                        <Award className="w-4 h-4 md:w-5 md:h-5 text-indigo-500" />
-                        <span className="text-sm md:text-base font-black text-slate-700">المستوى {child.level}</span>
-                      </div>
-                      <span className="text-[10px] md:text-xs font-bold text-slate-500">{child.xp} / {child.nextLevelXp} نقطة</span>
-                    </div>
-                    <div className="h-2.5 md:h-3 w-full bg-slate-200 rounded-full overflow-hidden mb-4 border border-slate-300/50">
-                      <div className="h-full bg-gradient-to-l from-purple-500 to-indigo-400 rounded-full" style={{ width: `${progressPercent}%` }} />
-                    </div>
-
-                    {/* Teacher Feedback Note */}
-                    {child.recentTeacherNote && (
-                      <div className="mt-3 rounded-2xl border border-emerald-100 bg-emerald-50 p-3 md:p-4">
-                        <div className="flex items-center gap-1.5 mb-1.5">
-                          <MessageCircle className="w-4 h-4 text-emerald-600" />
-                          <span className="text-xs md:text-sm font-black text-emerald-800">ملاحظة المعلم</span>
+                return (
+                  <motion.div 
+                    initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
+                    key={child.id} 
+                    className="rounded-3xl border border-slate-200 bg-white overflow-hidden shadow-sm"
+                  >
+                    {/* Child Header - Mobile Wrap */}
+                    <div className="p-4 md:p-5 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="flex items-center gap-3">
+                        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-purple-50 text-lg md:text-xl font-black text-purple-600 border border-purple-100">
+                          {child.name[0]}
                         </div>
-                        <p className="text-[11px] md:text-sm font-medium text-emerald-700 leading-relaxed">"{child.recentTeacherNote}"</p>
-                        <p className="text-[10px] md:text-xs font-bold text-emerald-600/70 mt-1.5">— {child.noteAuthor}</p>
+                        <div>
+                          <h3 className="text-lg md:text-xl font-black text-slate-800">{child.name}</h3>
+                          <p className="text-xs md:text-sm font-bold text-slate-500 flex items-center gap-1.5 mt-0.5">
+                            <GraduationCap className="w-3.5 h-3.5 text-purple-400" /> {child.track}
+                          </p>
+                        </div>
                       </div>
-                    )}
-                  </div>
+                      
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {child.badges.map((badge: string, idx: number) => (
+                          <span key={idx} className="flex items-center gap-1 bg-amber-50 border border-amber-100 text-amber-700 text-[10px] md:text-xs font-black px-2 py-1 md:px-2.5 md:py-1.5 rounded-xl">
+                            <Star className="w-3 h-3 fill-amber-500" /> {badge}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
 
-                  {/* Action Bar - Mobile Stacked */}
-                  <div className="p-3 md:p-4 border-t border-slate-100 flex flex-col sm:flex-row gap-2 md:gap-3">
-                    <button className="flex-1 flex justify-center items-center gap-2 bg-slate-900 text-white text-xs md:text-sm font-black py-2.5 md:py-3 rounded-xl hover:bg-slate-800 active:scale-95 transition-all shadow-md">
-                      <TrendingUp className="w-4 h-4" /> التقرير المفصل
-                    </button>
-                    <button className="flex-1 flex justify-center items-center gap-2 bg-white border-2 border-slate-200 text-slate-700 text-xs md:text-sm font-black py-2.5 md:py-3 rounded-xl hover:bg-slate-50 active:scale-95 transition-all">
-                      <CalendarDays className="w-4 h-4" /> جدول المهام
-                    </button>
-                  </div>
-                </motion.div>
-              );
-            })}
+                    {/* Progress & Stats */}
+                    <div className="p-4 md:p-5 bg-slate-50/50">
+                      <div className="flex justify-between items-end mb-2">
+                        <div className="flex items-center gap-1.5">
+                          <Award className="w-4 h-4 md:w-5 md:h-5 text-indigo-500" />
+                          <span className="text-sm md:text-base font-black text-slate-700">المستوى {child.level}</span>
+                        </div>
+                        <span className="text-[10px] md:text-xs font-bold text-slate-500">{child.xp} / {child.nextLevelXp} نقطة</span>
+                      </div>
+                      <div className="h-2.5 md:h-3 w-full bg-slate-200 rounded-full overflow-hidden mb-4 border border-slate-300/50">
+                        <div className="h-full bg-gradient-to-l from-purple-500 to-indigo-400 rounded-full" style={{ width: `${progressPercent}%` }} />
+                      </div>
+
+                      {/* Teacher Feedback Note */}
+                      {child.recentTeacherNote && (
+                        <div className="mt-3 rounded-2xl border border-emerald-100 bg-emerald-50 p-3 md:p-4">
+                          <div className="flex items-center gap-1.5 mb-1.5">
+                            <MessageCircle className="w-4 h-4 text-emerald-600" />
+                            <span className="text-xs md:text-sm font-black text-emerald-800">ملاحظة المعلم</span>
+                          </div>
+                          <p className="text-[11px] md:text-sm font-medium text-emerald-700 leading-relaxed">"{child.recentTeacherNote}"</p>
+                          <p className="text-[10px] md:text-xs font-bold text-emerald-600/70 mt-1.5">— {child.noteAuthor}</p>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Action Bar - Mobile Stacked */}
+                    <div className="p-3 md:p-4 border-t border-slate-100 flex flex-col sm:flex-row gap-2 md:gap-3">
+                      <button className="flex-1 flex justify-center items-center gap-2 bg-slate-900 text-white text-xs md:text-sm font-black py-2.5 md:py-3 rounded-xl hover:bg-slate-800 active:scale-95 transition-all shadow-md">
+                        <TrendingUp className="w-4 h-4" /> التقرير المفصل
+                      </button>
+                      <button className="flex-1 flex justify-center items-center gap-2 bg-white border-2 border-slate-200 text-slate-700 text-xs md:text-sm font-black py-2.5 md:py-3 rounded-xl hover:bg-slate-50 active:scale-95 transition-all">
+                        <CalendarDays className="w-4 h-4" /> جدول المهام
+                      </button>
+                    </div>
+                  </motion.div>
+                );
+              })
+            )}
           </div>
           
         </div>

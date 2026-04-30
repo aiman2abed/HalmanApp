@@ -18,6 +18,7 @@ import {
 import { motion, AnimatePresence } from 'framer-motion';
 import Image from 'next/image';
 import { useAuth } from '@/contexts/AuthContext';
+import { supabase } from '@/lib/supabase'; // Important: We need this to get the session!
 
 // Import our API functions
 import { 
@@ -562,8 +563,15 @@ export default function AssistantPage() {
     setVoiceInputStatus('transcribing');
 
     try {
-      const data = await transcribeAudio(audioBlob);
-      const transcript = (data.transcript || '').trim();
+      // 1. Get the session to pass the token
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        throw new Error("No active session");
+      }
+
+      // 2. Transcribe using the token
+      const data = await transcribeAudio(session.access_token, audioBlob);
+      const transcript = (data.transcription || '').trim(); // Changed to transcription to match backend
 
       if (!transcript) {
         pushBotStatusMessage('لم أسمع كلمات واضحة', 'حاول تتكلم بصوت أوضح ثم أعد التسجيل.');

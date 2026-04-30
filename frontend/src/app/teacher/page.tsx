@@ -1,6 +1,8 @@
+// src/app/teacher/page.tsx
 "use client";
 
-import { useState } from "react";
+import CmsVideoManager from "@/components/CmsVideoManager";
+import { useState, useEffect } from "react"; // <-- Added useEffect here!
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Presentation,
@@ -19,33 +21,45 @@ import {
 import { Can } from "@/components/auth/Can";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
+import { fetchTeacherStudents } from "@/lib/api";
 
-const MOCK_STUDENTS = [
-  { id: "st-1", name: "أحمد كريم", level: 4, xp: 1850, track: "مختبر الحاسوب", progress: 85, status: "نشط" },
-  { id: "st-2", name: "سارة محمود", level: 3, xp: 1420, track: "مختبر الحاسوب", progress: 60, status: "نشط" },
-  { id: "st-3", name: "يوسف علي", level: 5, xp: 2100, track: "مختبر الحاسوب", progress: 92, status: "متميز" },
-];
+
 
 export default function TeacherDashboardPage() {
   const { user, profile } = useAuth();
-  const [activeTab, setActiveTab] = useState<"students" | "history">("students");
+  const [activeTab, setActiveTab] = useState<"students" | "history" | "cms">("students");
   const [searchQuery, setSearchQuery] = useState("");
   
+  // --- NEW STATE FOR REAL DATA ---
+  const [students, setStudents] = useState<any[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedStudent, setSelectedStudent] = useState<any>(null);
   const [suggestionType, setSuggestionType] = useState("تعديل خطة طالب");
   const [suggestionText, setSuggestionText] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const filteredStudents = MOCK_STUDENTS.filter(s => s.name.includes(searchQuery));
+  // --- FETCH REAL DATA ON LOAD ---
+  useEffect(() => {
+    const loadStudents = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session) return;
+        
+        const data = await fetchTeacherStudents(session.access_token);
+        setStudents(data.students || []);
+      } catch (error) {
+        console.error(error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    loadStudents();
+  }, []);
 
-  const openSuggestionModal = (student: any) => {
-    setSelectedStudent(student);
-    setSuggestionType("تعديل خطة طالب");
-    setSuggestionText("");
-    setIsModalOpen(true);
-  };
-
+  // Update filter to use the real 'students' state
+  const filteredStudents = students.filter(s => s.name.includes(searchQuery));
   const submitSuggestion = async () => {
     if (!user || !selectedStudent) return;
     setIsSubmitting(true);
@@ -130,6 +144,7 @@ export default function TeacherDashboardPage() {
           <div className="flex overflow-x-auto rounded-2xl border border-slate-200 bg-white p-1.5 shadow-sm hide-scrollbar">
             <button onClick={() => setActiveTab("students")} className={`whitespace-nowrap rounded-xl px-4 py-2 text-xs md:text-sm font-bold transition-all ${activeTab === "students" ? "bg-emerald-50 text-emerald-700 shadow-sm" : "text-slate-500"}`}>الطلاب</button>
             <button onClick={() => setActiveTab("history")} className={`whitespace-nowrap rounded-xl px-4 py-2 text-xs md:text-sm font-bold transition-all ${activeTab === "history" ? "bg-emerald-50 text-emerald-700 shadow-sm" : "text-slate-500"}`}>سجل الاقتراحات</button>
+            <button onClick={() => setActiveTab("cms")} className={`whitespace-nowrap rounded-xl px-4 py-2 text-xs md:text-sm font-bold transition-all ${activeTab === "cms" ? "bg-emerald-50 text-emerald-700 shadow-sm" : "text-slate-500"}`}>إدارة المحتوى</button>
           </div>
 
           {activeTab === "students" && (
@@ -174,6 +189,14 @@ export default function TeacherDashboardPage() {
               </div>
             </motion.div>
           )}
+
+          {/* ===== NEW CMS TAB RENDER BLOCK ===== */}
+          {activeTab === "cms" && (
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+              <CmsVideoManager />
+            </motion.div>
+          )}
+
         </div>
       </div>
 

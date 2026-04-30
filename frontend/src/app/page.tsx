@@ -1,6 +1,6 @@
+// src/app/page.tsx
 "use client";
 
-import { API_BASE_URL } from '@/lib/api';
 import { motion } from "framer-motion";
 import {
   CheckCircle2,
@@ -38,13 +38,13 @@ interface CampusSpace {
   bgColor: string;
 }
 
-// 1. Define the 6 spaces with their coordinates
+// 1. Define the 6 spaces with their coordinates (Fixed frontend relative paths)
 const campusSpaces: CampusSpace[] = [
   {
     id: "library",
     title: "المكتبة",
     subtitle: "مصادر البحث والقراءة",
-    path: "${API_BASE_URL}/spaces/library",
+    path: "/spaces/library",
     description: "مساحة هادئة للبحث، قراءة الكتب، وبناء قاعدة معرفية صلبة.",
     quests: ["استعارة كتاب رقمي", "تلخيص مقال علمي"],
     suggestions: ["اقرأ عن تاريخ الحواسيب", "نظم جدول دراستك"],
@@ -59,7 +59,7 @@ const campusSpaces: CampusSpace[] = [
     id: "podcast",
     title: "استوديو البودكاست",
     subtitle: "إعلام وتواصل",
-    path: "${API_BASE_URL}/spaces/podcast",
+    path: "/spaces/podcast",
     description: "مكان لتسجيل أفكارك، إجراء المقابلات، وتطوير مهارات الإلقاء.",
     quests: ["تسجيل مقدمة دقيقة", "إجراء مقابلة قصيرة"],
     suggestions: ["تدرب على نبرة الصوت", "اكتب سيناريو لحلقة"],
@@ -74,7 +74,7 @@ const campusSpaces: CampusSpace[] = [
     id: "cs-lab",
     title: "مختبر الحاسوب",
     subtitle: "برمجة وتطوير",
-    path: "${API_BASE_URL}/spaces/cs-lab",
+    path: "/spaces/cs-lab",
     description: "اكتب أول أسطر الكود الخاص بك وتعرف على عالم الخوارزميات.",
     quests: ["طباعة Hello World", "حل لغز برمجي"],
     suggestions: ["جرب لغة بايثون", "صمم موقعاً بسيطاً"],
@@ -89,7 +89,7 @@ const campusSpaces: CampusSpace[] = [
     id: "chem-bio",
     title: "مختبر الكيمياء والأحياء",
     subtitle: "تجارب واكتشافات",
-    path: "${API_BASE_URL}/spaces/chem-bio",
+    path: "/spaces/chem-bio",
     description: "اكتشف أسرار الخلايا والتفاعلات الكيميائية من خلال تجارب آمنة.",
     quests: ["تجربة البركان الكيميائي", "فحص خلايا نباتية"],
     suggestions: ["سجل ملاحظات التجربة", "ارتدِ نظارة الحماية"],
@@ -104,7 +104,7 @@ const campusSpaces: CampusSpace[] = [
     id: "robotics",
     title: "ورشة الروبوتات",
     subtitle: "هندسة وميكانيكا",
-    path: "${API_BASE_URL}/spaces/robotics",
+    path: "/spaces/robotics",
     description: "ركّب أجزاء الروبوت وبرمجه ليقوم بمهام محددة في الحلبة.",
     quests: ["تحريك الروبوت للأمام", "استخدام حساس المسافة"],
     suggestions: ["تأكد من توصيل البطارية", "اختبر الروبوت ببطء"],
@@ -119,7 +119,7 @@ const campusSpaces: CampusSpace[] = [
     id: "greenhouse",
     title: "البيت الأخضر",
     subtitle: "زراعة وبيئة",
-    path: "${API_BASE_URL}/spaces/greenhouse",
+    path: "/spaces/greenhouse",
     description: "تعلم كيف تزرع النباتات وتعتني بالبيئة من حولك.",
     quests: ["زراعة بذرة", "مراقبة نمو النبتة"],
     suggestions: ["اسقِ النباتات بانتظام", "وفر ضوء الشمس المناسب"],

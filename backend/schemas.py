@@ -83,3 +83,20 @@ class RoleAssignmentRequest(BaseModel):
     role: str
     scope_type: str
     scope_id: Optional[str] = None
+
+class CMSVideoCreate(BaseModel):
+    title: str
+    description: str
+    hashtag: str
+    video_url: str
+
+class VideoActionRequest(BaseModel):
+    video_id: str
+
+class SuggestionCreate(BaseModel):
+    student_id: str
+    type: str
+    description: str
+
+class SuggestionUpdate(BaseModel):
+    status: str
